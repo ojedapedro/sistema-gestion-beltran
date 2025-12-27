@@ -1,0 +1,5 @@
+{
+  "name": "Sistema de Gestión Beltrán Prieto Figueroa",
+  "description": "Sistema integral de gestión administrativa para el colegio Beltrán Prieto Figueroa, permitiendo el control de matrículas, registros de pagos electrónicos y por taquilla, verificación de transacciones y reportes detallados.",
+  "requestFramePermissions": []
+}
