@@ -7,22 +7,24 @@ import PaymentRegister from './views/PaymentRegister';
 import PaymentVerification from './views/PaymentVerification';
 import AccountsReceivable from './views/AccountsReceivable';
 import Reports from './views/Reports';
+import Config from './views/Config';
 import NotificationCenter from './components/NotificationCenter';
 import { notificationService } from './services/notificationService';
 import { dataService } from './services/dataService';
-import { Database, RefreshCw } from 'lucide-react';
+import { Database, RefreshCw, TrendingUp } from 'lucide-react';
 
 const App: React.FC = () => {
   const [activeView, setActiveView] = useState('dashboard');
   const [isSyncing, setIsSyncing] = useState(false);
+  const [config, setConfig] = useState(dataService.getConfig());
 
   useEffect(() => {
     notificationService.requestPermission();
     
-    // Sincronización inicial con Google Sheets
     const initSync = async () => {
       setIsSyncing(true);
       await dataService.syncFromSheets();
+      setConfig(dataService.getConfig());
       setIsSyncing(false);
     };
     initSync();
@@ -31,6 +33,7 @@ const App: React.FC = () => {
   const handleSync = async () => {
     setIsSyncing(true);
     await dataService.syncFromSheets();
+    setConfig(dataService.getConfig());
     setIsSyncing(false);
   };
 
@@ -42,6 +45,7 @@ const App: React.FC = () => {
       case 'verification': return <PaymentVerification />;
       case 'ledger': return <AccountsReceivable />;
       case 'reports': return <Reports />;
+      case 'config': return <Config />;
       default: return <Dashboard />;
     }
   };
@@ -55,19 +59,20 @@ const App: React.FC = () => {
           <div className="flex items-center gap-4">
             <div className="bg-slate-900 px-4 py-2 rounded-xl shadow-lg border border-slate-700 flex items-center gap-3">
               <Database size={14} className="text-blue-400" />
-              <span className="text-xs font-bold text-slate-200 uppercase tracking-widest">Google Cloud DB</span>
+              <span className="text-xs font-bold text-slate-200 uppercase tracking-widest">Cloud DB</span>
               <button 
                 onClick={handleSync}
                 className={`ml-2 text-slate-400 hover:text-white transition-all ${isSyncing ? 'animate-spin' : ''}`}
-                title="Sincronizar ahora"
               >
                 <RefreshCw size={14} />
               </button>
             </div>
             
-            <div className="bg-blue-600/10 px-4 py-2 rounded-xl border border-blue-200 flex items-center gap-2">
-              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-              <span className="text-[10px] font-black text-blue-700 uppercase tracking-tighter">Periodo 2025-26</span>
+            <div className="bg-emerald-600/10 px-4 py-2 rounded-xl border border-emerald-200 flex items-center gap-2">
+              <TrendingUp size={14} className="text-emerald-600" />
+              <span className="text-[10px] font-black text-emerald-700 uppercase tracking-tighter">
+                Tasa: {config.exchangeRate.toFixed(2)} Bs/$
+              </span>
             </div>
           </div>
           
@@ -76,8 +81,8 @@ const App: React.FC = () => {
             <div className="h-8 w-px bg-slate-200"></div>
             <div className="flex items-center gap-4">
               <div className="text-right">
-                <p className="text-sm font-black text-slate-800 tracking-tight">Admin Colegio BPF</p>
-                <p className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Cloud Master</p>
+                <p className="text-sm font-black text-slate-800 tracking-tight">Admin BPF</p>
+                <p className="text-[10px] text-blue-600 font-black uppercase tracking-widest">Super Usuario</p>
               </div>
               <div className="w-10 h-10 metallic-dark text-white rounded-xl flex items-center justify-center font-black shadow-lg border border-slate-700">
                 BP

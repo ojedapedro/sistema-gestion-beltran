@@ -47,29 +47,26 @@ export interface PaymentRecord {
   paymentDate: string;
   cedulaRepresentative: string;
   matricula: string;
-  level: string; // The level(s) of students
-  sections: string; // The section(s) of students
+  level: string; 
+  sections: string;
   method: PaymentMethod;
   reference: string;
-  amount: number;
+  amount: number; // Siempre en USD
+  amountBs: number; // Equivalente en Bs al momento del pago
+  exchangeRate: number; // Tasa al momento del pago
   observations: string;
   status: PaymentStatus;
   type: PaymentType;
   pendingBalance: number;
 }
 
-export interface MonthlyConfig {
-  [key: string]: number; // Price per level
+export interface AppConfig {
+  monthlyFees: Record<Level, number>;
+  exchangeRate: number;
+  schoolName: string;
+  lastUpdated: string;
 }
 
-export interface User {
-  cedula: string;
-  clave: string;
-  nombre: string;
-  matricula: string;
-}
-
-// New Notification Types
 export enum NotificationCategory {
   PAYMENT = 'Pago',
   ANNOUNCEMENT = 'Anuncio',

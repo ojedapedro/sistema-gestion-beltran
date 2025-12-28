@@ -6,7 +6,8 @@ import {
   CreditCard, 
   CheckCircle, 
   BookOpen, 
-  FileText
+  FileText,
+  Settings
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -22,6 +23,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setActiveView }) => {
     { id: 'verification', label: 'Verificación', icon: CheckCircle },
     { id: 'ledger', label: 'Cuentas por Cobrar', icon: BookOpen },
     { id: 'reports', label: 'Reportes', icon: FileText },
+    { id: 'config', label: 'Configuración', icon: Settings },
   ];
 
   return (
@@ -64,7 +66,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setActiveView }) => {
       <div className="p-4 bg-black/20 border-t border-slate-800">
         <div className="bg-slate-800/50 p-3 rounded-xl text-[10px] text-slate-500 border border-slate-700">
           <p className="font-bold text-slate-400">BPF Sistema Admin</p>
-          <p className="mt-1 opacity-70">v1.2 Metallic Pro</p>
+          <p className="mt-1 opacity-70">v1.3 Metallic Pro Multi-Currency</p>
         </div>
       </div>
     </aside>

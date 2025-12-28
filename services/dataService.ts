@@ -1,25 +1,23 @@
 
-import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType } from '../types';
-import { MONTHLY_FEES, WEB_APP_URL } from '../constants';
+import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType, AppConfig, Level } from '../types';
+import { DEFAULT_CONFIG, WEB_APP_URL } from '../constants';
 
 const STORAGE_KEY_REPRESENTATIVES = 'bpf_representatives';
 const STORAGE_KEY_PAYMENTS = 'bpf_payments';
+const STORAGE_KEY_CONFIG = 'bpf_config';
 
-// Helper para llamadas a la API de Google Sheets
 async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
   if (!WEB_APP_URL) return null;
-  
   try {
     if (method === 'GET') {
       const response = await fetch(`${WEB_APP_URL}?action=${action}`);
       return await response.json();
     } else {
-      const response = await fetch(WEB_APP_URL, {
+      await fetch(WEB_APP_URL, {
         method: 'POST',
         body: JSON.stringify({ action, data }),
-        mode: 'no-cors' // Google Apps Script POST requiere a veces no-cors o manejo de redirects
+        mode: 'no-cors'
       });
-      // Con no-cors no podemos leer la respuesta, pero el envío se realiza
       return { success: true };
     }
   } catch (error) {
@@ -29,34 +27,51 @@ async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
 }
 
 export const dataService = {
+  getConfig: (): AppConfig => {
+    const data = localStorage.getItem(STORAGE_KEY_CONFIG);
+    return data ? JSON.parse(data) : DEFAULT_CONFIG;
+  },
+
+  saveConfig: async (config: AppConfig) => {
+    localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
+    await apiCall('saveConfig', 'POST', config);
+  },
+
+  formatCurrency: (amount: number, currency: 'USD' | 'BS' = 'USD') => {
+    const config = dataService.getConfig();
+    if (currency === 'BS') {
+      const bsAmount = amount * config.exchangeRate;
+      return new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES' }).format(bsAmount);
+    }
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+  },
+
+  getDualAmount: (amountUSD: number) => {
+    return `${dataService.formatCurrency(amountUSD, 'USD')} (${dataService.formatCurrency(amountUSD, 'BS')})`;
+  },
+
   getRepresentatives: (): Representative[] => {
     const data = localStorage.getItem(STORAGE_KEY_REPRESENTATIVES);
     return data ? JSON.parse(data) : [];
   },
 
-  // Sincronizar con Sheets
   syncFromSheets: async () => {
+    const remoteConfig = await apiCall('getConfig', 'GET');
+    if (remoteConfig) localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
+
     const remoteReps = await apiCall('getRepresentatives', 'GET');
-    if (remoteReps && Array.isArray(remoteReps)) {
-      localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
-    }
+    if (remoteReps && Array.isArray(remoteReps)) localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+
     const remotePayments = await apiCall('getPayments', 'GET');
-    if (remotePayments && Array.isArray(remotePayments)) {
-      localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
-    }
+    if (remotePayments && Array.isArray(remotePayments)) localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
   },
 
   saveRepresentative: async (rep: Representative) => {
     const current = dataService.getRepresentatives();
     const exists = current.findIndex(r => r.cedula === rep.cedula);
-    if (exists > -1) {
-      current[exists] = rep;
-    } else {
-      current.push(rep);
-    }
+    if (exists > -1) current[exists] = rep;
+    else current.push(rep);
     localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(current));
-    
-    // Remote Sync
     await apiCall('saveRepresentative', 'POST', rep);
   },
 
@@ -70,7 +85,10 @@ export const dataService = {
   },
 
   addPayment: async (payment: Partial<PaymentRecord>) => {
+    const config = dataService.getConfig();
     const current = dataService.getPayments();
+    const amount = payment.amount || 0;
+    
     const newPayment: PaymentRecord = {
       id: `PAY-${Date.now()}`,
       timestamp: new Date().toISOString(),
@@ -81,7 +99,9 @@ export const dataService = {
       sections: payment.sections || '',
       method: payment.method || PaymentMethod.EFECTIVO_USD,
       reference: payment.reference || '',
-      amount: payment.amount || 0,
+      amount: amount,
+      amountBs: amount * config.exchangeRate,
+      exchangeRate: config.exchangeRate,
       observations: payment.observations || '',
       status: payment.status || PaymentStatus.PENDIENTE,
       type: payment.type || PaymentType.PAGO_TOTAL,
@@ -89,10 +109,7 @@ export const dataService = {
     };
     current.push(newPayment);
     localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-
-    // Remote Sync
     await apiCall('addPayment', 'POST', newPayment);
-    
     return newPayment;
   },
 
@@ -102,8 +119,6 @@ export const dataService = {
     if (idx > -1) {
       current[idx].status = status;
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-      
-      // Remote Sync
       await apiCall('updatePaymentStatus', 'POST', { id, status });
     }
   },
@@ -111,15 +126,13 @@ export const dataService = {
   calculatePendingBalance: (cedula: string): number => {
     const rep = dataService.getRepresentativeByCedula(cedula);
     if (!rep) return 0;
-
+    const config = dataService.getConfig();
     const currentMonthIndex = new Date().getMonth();
-    // Año escolar Sept -> Julio (Vzla)
-    // Sept(8) -> 1, Oct(9) -> 2, ..., Dic(11) -> 4, Ene(0) -> 5, ..., Jul(6) -> 11
     const monthsElapsed = currentMonthIndex >= 8 ? (currentMonthIndex - 8 + 1) : (currentMonthIndex + 4 + 1);
     
     let totalOwed = 0;
     rep.students.forEach(s => {
-      totalOwed += (MONTHLY_FEES[s.level] || 0) * monthsElapsed;
+      totalOwed += (config.monthlyFees[s.level] || 0) * monthsElapsed;
     });
 
     const totalPaid = dataService.getPayments()
