@@ -1,20 +1,15 @@
 
 import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType, AppConfig, Level, Student } from '../types';
-import { DEFAULT_CONFIG, WEB_APP_URL } from '../constants';
+import { DEFAULT_CONFIG, WEB_APP_URL, VIRTUAL_OFFICE_URL } from '../constants';
 
 const STORAGE_KEY_REPRESENTATIVES = 'bpf_representatives';
 const STORAGE_KEY_PAYMENTS = 'bpf_payments';
+const STORAGE_KEY_VIRTUAL_PAYMENTS = 'bpf_virtual_payments';
 const STORAGE_KEY_CONFIG = 'bpf_config';
 
-/**
- * Función de llamada a la API optimizada para evitar errores CORS con Google Apps Script.
- * No usamos Content-Type: application/json en POST para evitar el pre-flight OPTIONS.
- */
-async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
-  if (!WEB_APP_URL) return null;
-
-  const baseUrl = WEB_APP_URL.trim();
-  const url = method === 'GET' ? `${baseUrl}?action=${action}` : baseUrl;
+async function apiCall(url: string, action: string, method: 'GET' | 'POST', data?: any) {
+  if (!url) return null;
+  const targetUrl = method === 'GET' ? `${url}?action=${action}` : url;
 
   try {
     const options: RequestInit = {
@@ -23,28 +18,15 @@ async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
       redirect: 'follow',
       credentials: 'omit'
     };
-
     if (method === 'POST') {
-      // Enviamos como texto plano para evitar pre-flight CORS
       options.body = JSON.stringify({ action, data });
     }
-
-    const response = await fetch(url, options);
-    
-    if (!response.ok) {
-      throw new Error(`Error de red: ${response.status}`);
-    }
-
+    const response = await fetch(targetUrl, options);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const result = await response.json();
-    if (result && result.error) {
-      console.error("Error devuelto por el servidor:", result.error);
-      return null;
-    }
-    
     return result;
   } catch (error) {
     console.error(`Fallo de comunicación (${action}):`, error);
-    // En caso de fallo total, retornamos null para que la app use el cache local
     return null;
   }
 }
@@ -54,19 +36,13 @@ export const dataService = {
     try {
       const data = localStorage.getItem(STORAGE_KEY_CONFIG);
       const savedConfig = data ? JSON.parse(data) : {};
-      return { 
-        ...DEFAULT_CONFIG, 
-        ...savedConfig,
-        monthlyFees: { ...DEFAULT_CONFIG.monthlyFees, ...(savedConfig.monthlyFees || {}) }
-      };
-    } catch (e) {
-      return DEFAULT_CONFIG;
-    }
+      return { ...DEFAULT_CONFIG, ...savedConfig };
+    } catch (e) { return DEFAULT_CONFIG; }
   },
 
   saveConfig: async (config: AppConfig) => {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
-    return await apiCall('saveConfig', 'POST', config);
+    return await apiCall(WEB_APP_URL, 'saveConfig', 'POST', config);
   },
 
   formatCurrency: (amount: number, currency: 'USD' | 'BS' = 'USD') => {
@@ -83,24 +59,27 @@ export const dataService = {
     return data ? JSON.parse(data) : [];
   },
 
+  getVirtualPayments: (): any[] => {
+    const data = localStorage.getItem(STORAGE_KEY_VIRTUAL_PAYMENTS);
+    return data ? JSON.parse(data) : [];
+  },
+
   syncFromSheets: async () => {
-    try {
-      const remoteConfig = await apiCall('getConfig', 'GET');
-      if (remoteConfig) {
-        localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify({ ...dataService.getConfig(), ...remoteConfig }));
-      }
+    // 1. Sincronizar Configuración y Datos Internos
+    const remoteConfig = await apiCall(WEB_APP_URL, 'getConfig', 'GET');
+    if (remoteConfig) localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
 
-      const remoteReps = await apiCall('getRepresentatives', 'GET');
-      if (Array.isArray(remoteReps)) {
-        localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
-      }
+    const remoteReps = await apiCall(WEB_APP_URL, 'getRepresentatives', 'GET');
+    if (Array.isArray(remoteReps)) localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
 
-      const remotePayments = await apiCall('getPayments', 'GET');
-      if (Array.isArray(remotePayments)) {
-        localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
-      }
-    } catch (err) {
-      console.warn("Sincronización fallida, usando datos locales.");
+    const remotePayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET');
+    if (Array.isArray(remotePayments)) localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+
+    // 2. Sincronizar Oficina Virtual
+    const virtualPayments = await apiCall(VIRTUAL_OFFICE_URL, 'getPayments', 'GET');
+    if (Array.isArray(virtualPayments)) {
+      // Guardar pagos de oficina virtual que NO estén ya en la base principal
+      localStorage.setItem(STORAGE_KEY_VIRTUAL_PAYMENTS, JSON.stringify(virtualPayments));
     }
   },
 
@@ -110,7 +89,7 @@ export const dataService = {
     if (exists > -1) current[exists] = rep;
     else current.push(rep);
     localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(current));
-    return await apiCall('saveRepresentative', 'POST', rep);
+    return await apiCall(WEB_APP_URL, 'saveRepresentative', 'POST', rep);
   },
 
   getRepresentativeByCedula: (cedula: string): Representative | undefined => {
@@ -129,7 +108,7 @@ export const dataService = {
     const rate = config.exchangeRate || DEFAULT_CONFIG.exchangeRate;
     
     const newPayment: PaymentRecord = {
-      id: `PAY-${Date.now()}`,
+      id: payment.id || `PAY-${Date.now()}`,
       timestamp: new Date().toISOString(),
       paymentDate: payment.paymentDate || new Date().toISOString().split('T')[0],
       cedulaRepresentative: payment.cedulaRepresentative || '',
@@ -148,7 +127,7 @@ export const dataService = {
     };
     current.push(newPayment);
     localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-    await apiCall('addPayment', 'POST', newPayment);
+    await apiCall(WEB_APP_URL, 'addPayment', 'POST', newPayment);
     return newPayment;
   },
 
@@ -158,34 +137,23 @@ export const dataService = {
     if (idx > -1) {
       current[idx].status = status;
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-      return await apiCall('updatePaymentStatus', 'POST', { id, status });
+      return await apiCall(WEB_APP_URL, 'updatePaymentStatus', 'POST', { id, status });
     }
   },
 
   calculatePendingBalance: (cedula: string): number => {
     const rep = dataService.getRepresentativeByCedula(cedula);
     if (!rep) return 0;
-    
     const config = dataService.getConfig();
     const now = new Date();
-    
     let totalOwed = 0;
     rep.students.forEach(s => {
-      // Determinamos la fecha de inscripción
       const enrollmentDate = s.enrollmentDate ? new Date(s.enrollmentDate) : new Date();
-      
-      // Calculamos la diferencia de meses
-      // Si se inscribe hoy, diffMonths será 1.
       let diffMonths = (now.getFullYear() - enrollmentDate.getFullYear()) * 12 + (now.getMonth() - enrollmentDate.getMonth()) + 1;
-      
-      // Evitamos meses negativos o cero
-      const monthsToPay = Math.max(1, diffMonths);
-      
       const fee = config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0;
-      totalOwed += (fee * monthsToPay);
+      totalOwed += (fee * Math.max(1, diffMonths));
     });
 
-    // Restamos pagos VERIFICADOS
     const totalPaid = dataService.getPayments()
       .filter(p => p.cedulaRepresentative === cedula && p.status === PaymentStatus.VERIFICADO)
       .reduce((sum, p) => sum + p.amount, 0);

@@ -8,11 +8,15 @@ export const DEFAULT_CONFIG: AppConfig = {
     [Level.PRIMARIA]: 60,
     [Level.SECUNDARIA]: 90
   },
-  exchangeRate: 45.50, // Tasa inicial sugerida
-  schoolName: 'Beltrán Prieto Figueroa',
+  exchangeRate: 0.00,
+  schoolName: 'Luis Beltrán Prieto Figueroa',
   lastUpdated: new Date().toISOString()
 };
 
 export const GOOGLE_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
-export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby8gNuLgleKd1cVGnn6kIPhxYudJT8OyHRjiNb0lPqEEje4EwJolUUZGcSGqMasbXzTiw/exec'; 
+export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwM2K3lGjKQifyyxJbXtls1tovqqYCrY4aQZ3OE5sGBPL8HACDsUvhTADjjRsrV9D2lfA/exec'; 
+
+// URL de la Oficina Virtual proporcionada por el usuario
+export const VIRTUAL_OFFICE_URL = 'https://script.google.com/macros/s/AKfycbxNBy31uyMDtIQ0BhfMHlSH4SyTA1w9_dtFO7DdfCFgnkniSXKlEPlB8AEFyQo7aoTvFw/exec';
+
 export const SECTIONS = ['A', 'B', 'C', 'D'];
