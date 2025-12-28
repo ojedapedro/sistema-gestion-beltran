@@ -1,32 +1,44 @@
 
 import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType, AppConfig, Level, Student } from '../types';
-import { DEFAULT_CONFIG, WEB_APP_URL, VIRTUAL_OFFICE_URL } from '../constants';
+import { DEFAULT_CONFIG, WEB_APP_URL, ADMIN_SHEET_ID, VIRTUAL_SHEET_ID } from '../constants';
 
 const STORAGE_KEY_REPRESENTATIVES = 'bpf_representatives';
 const STORAGE_KEY_PAYMENTS = 'bpf_payments';
 const STORAGE_KEY_VIRTUAL_PAYMENTS = 'bpf_virtual_payments';
 const STORAGE_KEY_CONFIG = 'bpf_config';
 
-async function apiCall(url: string, action: string, method: 'GET' | 'POST', data?: any) {
+async function apiCall(url: string, action: string, method: 'GET' | 'POST', ssid: string, data?: any) {
   if (!url) return null;
-  const targetUrl = method === 'GET' ? `${url}?action=${action}` : url;
+  
+  // Incluimos el ssid en la URL para GET o en el body para POST
+  const targetUrl = method === 'GET' 
+    ? `${url}${url.includes('?') ? '&' : '?'}action=${action}&ssid=${ssid}` 
+    : url;
 
   try {
     const options: RequestInit = {
       method: method,
       mode: 'cors',
+      cache: 'no-cache',
       redirect: 'follow',
-      credentials: 'omit'
     };
+
     if (method === 'POST') {
-      options.body = JSON.stringify({ action, data });
+      options.body = JSON.stringify({ action, data, ssid });
     }
+
     const response = await fetch(targetUrl, options);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const result = await response.json();
-    return result;
+    if (!response.ok) return null;
+
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      console.error("JSON Error:", text);
+      return null;
+    }
   } catch (error) {
-    console.error(`Fallo de comunicación (${action}):`, error);
+    console.warn(`Error en [${action}]:`, error);
     return null;
   }
 }
@@ -42,7 +54,7 @@ export const dataService = {
 
   saveConfig: async (config: AppConfig) => {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
-    return await apiCall(WEB_APP_URL, 'saveConfig', 'POST', config);
+    return await apiCall(WEB_APP_URL, 'saveConfig', 'POST', ADMIN_SHEET_ID, config);
   },
 
   formatCurrency: (amount: number, currency: 'USD' | 'BS' = 'USD') => {
@@ -65,20 +77,27 @@ export const dataService = {
   },
 
   syncFromSheets: async () => {
-    // 1. Sincronizar Configuración y Datos Internos
-    const remoteConfig = await apiCall(WEB_APP_URL, 'getConfig', 'GET');
-    if (remoteConfig) localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
+    // 1. Sincronizar Configuración de Admin
+    const remoteConfig = await apiCall(WEB_APP_URL, 'getConfig', 'GET', ADMIN_SHEET_ID);
+    if (remoteConfig && !remoteConfig.error) {
+      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
+    }
 
-    const remoteReps = await apiCall(WEB_APP_URL, 'getRepresentatives', 'GET');
-    if (Array.isArray(remoteReps)) localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+    // 2. Sincronizar Representantes de Admin
+    const remoteReps = await apiCall(WEB_APP_URL, 'getRepresentatives', 'GET', ADMIN_SHEET_ID);
+    if (Array.isArray(remoteReps)) {
+      localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+    }
 
-    const remotePayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET');
-    if (Array.isArray(remotePayments)) localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+    // 3. Sincronizar Pagos de Admin
+    const remotePayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET', ADMIN_SHEET_ID);
+    if (Array.isArray(remotePayments)) {
+      localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+    }
 
-    // 2. Sincronizar Oficina Virtual
-    const virtualPayments = await apiCall(VIRTUAL_OFFICE_URL, 'getPayments', 'GET');
+    // 4. Sincronizar Pagos de Oficina Virtual
+    const virtualPayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET', VIRTUAL_SHEET_ID);
     if (Array.isArray(virtualPayments)) {
-      // Guardar pagos de oficina virtual que NO estén ya en la base principal
       localStorage.setItem(STORAGE_KEY_VIRTUAL_PAYMENTS, JSON.stringify(virtualPayments));
     }
   },
@@ -89,11 +108,11 @@ export const dataService = {
     if (exists > -1) current[exists] = rep;
     else current.push(rep);
     localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(current));
-    return await apiCall(WEB_APP_URL, 'saveRepresentative', 'POST', rep);
+    return await apiCall(WEB_APP_URL, 'saveRepresentative', 'POST', ADMIN_SHEET_ID, rep);
   },
 
   getRepresentativeByCedula: (cedula: string): Representative | undefined => {
-    return dataService.getRepresentatives().find(r => r.cedula === cedula);
+    return dataService.getRepresentatives().find(r => r.cedula.toString() === (cedula || "").toString());
   },
 
   getPayments: (): PaymentRecord[] => {
@@ -111,12 +130,12 @@ export const dataService = {
       id: payment.id || `PAY-${Date.now()}`,
       timestamp: new Date().toISOString(),
       paymentDate: payment.paymentDate || new Date().toISOString().split('T')[0],
-      cedulaRepresentative: payment.cedulaRepresentative || '',
+      cedulaRepresentative: (payment.cedulaRepresentative || '').toString(),
       matricula: payment.matricula || '',
       level: payment.level || '',
       sections: payment.sections || '',
-      method: payment.method || PaymentMethod.EFECTIVO_USD,
-      reference: payment.reference || '',
+      method: payment.method as any,
+      reference: (payment.reference || '').toString(),
       amount: amount,
       amountBs: amount * rate,
       exchangeRate: rate,
@@ -125,20 +144,23 @@ export const dataService = {
       type: payment.type || PaymentType.PAGO_TOTAL,
       pendingBalance: payment.pendingBalance || 0,
     };
+    
     current.push(newPayment);
     localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-    await apiCall(WEB_APP_URL, 'addPayment', 'POST', newPayment);
+    // Guardamos en la base de Administración
+    await apiCall(WEB_APP_URL, 'addPayment', 'POST', ADMIN_SHEET_ID, newPayment);
     return newPayment;
   },
 
-  updatePaymentStatus: async (id: string, status: PaymentStatus) => {
+  updatePaymentStatus: async (id: string, status: PaymentStatus, reference?: string) => {
     const current = dataService.getPayments();
     const idx = current.findIndex(p => p.id === id);
     if (idx > -1) {
       current[idx].status = status;
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-      return await apiCall(WEB_APP_URL, 'updatePaymentStatus', 'POST', { id, status });
     }
+    // Actualizamos en la base de Administración
+    return await apiCall(WEB_APP_URL, 'updatePaymentStatus', 'POST', ADMIN_SHEET_ID, { id, status, reference });
   },
 
   calculatePendingBalance: (cedula: string): number => {
@@ -147,15 +169,17 @@ export const dataService = {
     const config = dataService.getConfig();
     const now = new Date();
     let totalOwed = 0;
+    
     rep.students.forEach(s => {
       const enrollmentDate = s.enrollmentDate ? new Date(s.enrollmentDate) : new Date();
       let diffMonths = (now.getFullYear() - enrollmentDate.getFullYear()) * 12 + (now.getMonth() - enrollmentDate.getMonth()) + 1;
-      const fee = config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0;
+      const fees = config.monthlyFees || DEFAULT_CONFIG.monthlyFees;
+      const fee = fees[s.level] || 0;
       totalOwed += (fee * Math.max(1, diffMonths));
     });
 
     const totalPaid = dataService.getPayments()
-      .filter(p => p.cedulaRepresentative === cedula && p.status === PaymentStatus.VERIFICADO)
+      .filter(p => p.cedulaRepresentative.toString() === cedula.toString() && p.status === PaymentStatus.VERIFICADO)
       .reduce((sum, p) => sum + p.amount, 0);
 
     return Math.max(0, totalOwed - totalPaid);

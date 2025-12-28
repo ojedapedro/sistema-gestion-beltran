@@ -13,10 +13,11 @@ export const DEFAULT_CONFIG: AppConfig = {
   lastUpdated: new Date().toISOString()
 };
 
-export const GOOGLE_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
-export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbwM2K3lGjKQifyyxJbXtls1tovqqYCrY4aQZ3OE5sGBPL8HACDsUvhTADjjRsrV9D2lfA/exec'; 
+// IDs extraídos de tus capturas de pantalla
+export const ADMIN_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
+export const VIRTUAL_SHEET_ID = '17slRl7f9AKQgCEGF5jDLMGfmOc-unp1gXSRpYFGX1Eg';
 
-// URL de la Oficina Virtual proporcionada por el usuario
-export const VIRTUAL_OFFICE_URL = 'https://script.google.com/macros/s/AKfycbxNBy31uyMDtIQ0BhfMHlSH4SyTA1w9_dtFO7DdfCFgnkniSXKlEPlB8AEFyQo7aoTvFw/exec';
+// URL del script (debe ser la misma para ambos si usas el mismo backend)
+export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyTuMZugViEbgZ2rbgbsbqn5M3dn16Dxhpzxrj4hkZA2Gl7DA6x2K_fWOedIXLOe47eKA/exec';
 
 export const SECTIONS = ['A', 'B', 'C', 'D'];

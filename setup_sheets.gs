@@ -1,19 +1,17 @@
 
 /**
- * Backend Script para Colegio Beltrán Prieto Figueroa
- * Versión Robusta v2.3 - Estabilidad y Compatibilidad CORS
+ * Backend Script Multi-Base de Datos para Colegio Beltrán Prieto Figueroa
+ * Soporta Administración Central y Oficina Virtual
  */
 
-function getOrCreateSheet(name) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (!ss) {
-    // Intenta obtener por ID si no hay activo (necesario en algunos contextos de ejecución)
-    try {
-      // Reemplaza con tu ID real si el script no está contenido en la hoja
-      ss = SpreadsheetApp.openById("1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ");
-    } catch(e) {
-      throw new Error("No se pudo conectar con la base de datos de Google Sheets.");
-    }
+function getOrCreateSheet(name, ssid) {
+  var ss;
+  try {
+    // Si se pasa un ssid en la petición, lo usamos. Si no, usamos el activo.
+    ss = ssid ? SpreadsheetApp.openById(ssid) : SpreadsheetApp.getActiveSpreadsheet();
+  } catch(e) {
+    console.error("Error abriendo hoja: " + e.toString());
+    return null;
   }
   
   var sheet = ss.getSheetByName(name);
@@ -34,30 +32,37 @@ function getOrCreateSheet(name) {
 
 function doGet(e) {
   var action = e.parameter.action;
+  var ssid = e.parameter.ssid; // Recibir ID de hoja dinámico
+  
+  if (!action) {
+    return createJsonResponse({ status: "Online", message: "Servidor BPF Activo. Esperando acción...", ssid_received: ssid || "Default" });
+  }
+
   try {
     var sheet;
-    if (action === "getConfig") {
-      sheet = getOrCreateSheet("Configuracion");
+    if (action === "getPayments") {
+      sheet = getOrCreateSheet("Pagos", ssid);
+      if (!sheet) return createJsonResponse({ error: "No se encontró la hoja Pagos en el ID proporcionado" });
+      
       var data = sheet.getDataRange().getValues();
-      var config = {};
-      if (data.length > 1) {
-        data.slice(1).forEach(function(row) {
-          if (!row[0]) return;
-          if (row[0] === "monthlyFees") {
-            try { config[row[0]] = JSON.parse(row[1]); } catch(e) { config[row[0]] = {}; }
-          }
-          else if (row[0] === "exchangeRate") config[row[0]] = parseFloat(row[1]);
-          else config[row[0]] = row[1];
+      if (data.length <= 1) return createJsonResponse([]);
+      
+      var headers = data[0];
+      var result = data.slice(1).map(function(row) {
+        var obj = {};
+        headers.forEach(function(h, i) {
+          obj[h] = row[i];
         });
-      }
-      return createJsonResponse(config);
+        return obj;
+      });
+      return createJsonResponse(result);
     }
-    
+
     if (action === "getRepresentatives") {
-      sheet = getOrCreateSheet("Usuarios");
+      sheet = getOrCreateSheet("Usuarios", ssid);
       var dataR = sheet.getDataRange().getValues();
       if (dataR.length <= 1) return createJsonResponse([]);
-      var reps = dataR.slice(1).map(function(row) {
+      return createJsonResponse(dataR.slice(1).map(function(row) {
         return {
           cedula: row[0].toString(),
           name: row[1],
@@ -65,26 +70,24 @@ function doGet(e) {
           students: JSON.parse(row[3] || "[]"),
           createdAt: row[4] || ""
         };
-      });
-      return createJsonResponse(reps);
+      }));
     }
 
-    if (action === "getPayments") {
-      sheet = getOrCreateSheet("Pagos");
-      var dataP = sheet.getDataRange().getValues();
-      if (dataP.length <= 1) return createJsonResponse([]);
-      var headers = dataP[0];
-      var payments = dataP.slice(1).map(function(row) {
-        var p = {};
-        headers.forEach(function(h, i) { p[h] = row[i]; });
-        return p;
+    if (action === "getConfig") {
+      sheet = getOrCreateSheet("Configuracion", ssid);
+      var dataC = sheet.getDataRange().getValues();
+      var config = {};
+      dataC.slice(1).forEach(function(row) {
+        if (!row[0]) return;
+        if (row[0] === "monthlyFees") config[row[0]] = JSON.parse(row[1]);
+        else config[row[0]] = row[1];
       });
-      return createJsonResponse(payments);
+      return createJsonResponse(config);
     }
-    
-    return createJsonResponse({ error: "Acción no encontrada" });
+
+    return createJsonResponse({ error: "Acción no reconocida" });
   } catch (err) {
-    return createJsonResponse({ error: "Error en Servidor BPF: " + err.toString() });
+    return createJsonResponse({ error: err.toString() });
   }
 }
 
@@ -93,55 +96,50 @@ function doPost(e) {
     var body = JSON.parse(e.postData.contents);
     var action = body.action;
     var data = body.data;
+    var ssid = body.ssid; // Recibir ID de hoja dinámico en POST
     var sheet;
 
+    if (action === "addPayment") {
+      sheet = getOrCreateSheet("Pagos", ssid);
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var newRow = headers.map(function(h) {
+        return data[h] !== undefined ? data[h] : "";
+      });
+      sheet.appendRow(newRow);
+      return createJsonResponse({ success: true });
+    }
+
     if (action === "saveRepresentative") {
-      sheet = getOrCreateSheet("Usuarios");
+      sheet = getOrCreateSheet("Usuarios", ssid);
       var values = sheet.getDataRange().getValues();
-      var foundIndex = -1;
+      var rowIndex = -1;
       for (var i = 1; i < values.length; i++) {
         if (values[i][0].toString() === data.cedula.toString()) {
-          foundIndex = i + 1;
+          rowIndex = i + 1;
           break;
         }
       }
       var rowData = [data.cedula, data.name, data.matricula, JSON.stringify(data.students), data.createdAt || new Date().toISOString()];
-      if (foundIndex > -1) {
-        sheet.getRange(foundIndex, 1, 1, rowData.length).setValues([rowData]);
+      if (rowIndex > -1) {
+        sheet.getRange(rowIndex, 1, 1, rowData.length).setValues([rowData]);
       } else {
         sheet.appendRow(rowData);
       }
       return createJsonResponse({ success: true });
     }
 
-    if (action === "addPayment") {
-      sheet = getOrCreateSheet("Pagos");
-      sheet.appendRow([
-        data.id, data.timestamp, data.paymentDate, data.cedulaRepresentative,
-        data.matricula, data.level, data.method, data.reference,
-        data.amount, data.amountBs, data.exchangeRate, data.observations,
-        data.status, data.type, data.pendingBalance
-      ]);
-      return createJsonResponse({ success: true });
-    }
-
-    if (action === "saveConfig") {
-      sheet = getOrCreateSheet("Configuracion");
-      sheet.clear();
-      sheet.appendRow(["key", "value"]);
-      sheet.appendRow(["monthlyFees", JSON.stringify(data.monthlyFees)]);
-      sheet.appendRow(["exchangeRate", data.exchangeRate]);
-      sheet.appendRow(["schoolName", data.schoolName]);
-      sheet.appendRow(["lastUpdated", data.lastUpdated]);
-      return createJsonResponse({ success: true });
-    }
-    
     if (action === "updatePaymentStatus") {
-      sheet = getOrCreateSheet("Pagos");
-      var values = sheet.getDataRange().getValues();
-      for (var i = 1; i < values.length; i++) {
-        if (values[i][0] === data.id) {
-          sheet.getRange(i + 1, 13).setValue(data.status); // Columna 13 es 'status'
+      sheet = getOrCreateSheet("Pagos", ssid);
+      var valuesP = sheet.getDataRange().getValues();
+      for (var j = 1; j < valuesP.length; j++) {
+        // Buscamos por ID o por Referencia si el ID no existe (caso Virtual)
+        if (valuesP[j][0] === data.id || (data.reference && valuesP[j][7] === data.reference)) {
+          // Buscamos la columna 'status' dinámicamente
+          var headersP = valuesP[0];
+          var statusCol = headersP.indexOf("status") + 1;
+          if (statusCol > 0) {
+            sheet.getRange(j + 1, statusCol).setValue(data.status);
+          }
           break;
         }
       }
@@ -150,7 +148,7 @@ function doPost(e) {
 
     return createJsonResponse({ error: "Acción POST no reconocida" });
   } catch (err) {
-    return createJsonResponse({ error: "Error procesando POST: " + err.toString() });
+    return createJsonResponse({ error: err.toString() });
   }
 }
 
