@@ -7,21 +7,48 @@ const STORAGE_KEY_PAYMENTS = 'bpf_payments';
 const STORAGE_KEY_CONFIG = 'bpf_config';
 
 async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
-  if (!WEB_APP_URL) return null;
+  if (!WEB_APP_URL) {
+    console.warn("WEB_APP_URL no configurada.");
+    return null;
+  }
+
+  const baseUrl = WEB_APP_URL.trim();
+  const url = method === 'GET' ? `${baseUrl}?action=${action}` : baseUrl;
+
   try {
-    if (method === 'GET') {
-      const response = await fetch(`${WEB_APP_URL}?action=${action}`);
-      return await response.json();
-    } else {
-      await fetch(WEB_APP_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action, data }),
-        mode: 'no-cors'
-      });
-      return { success: true };
+    const options: RequestInit = {
+      method: method,
+      mode: 'cors',
+      // 'follow' es vital para las redirecciones de Google Apps Script
+      redirect: 'follow', 
+    };
+
+    if (method === 'POST') {
+      /**
+       * IMPORTANTE: No usamos headers['Content-Type'] = 'application/json'.
+       * Google Apps Script acepta JSON enviado como texto plano.
+       * Esto evita el pre-vuelo OPTIONS de CORS (Failed to fetch).
+       */
+      options.body = JSON.stringify({ action, data });
     }
+
+    const response = await fetch(url, options);
+    
+    // Si la respuesta es de tipo opaco (mode: 'no-cors'), no podremos leer el body.
+    // Pero aquí usamos mode: 'cors' y redirect: 'follow' para que funcione correctamente.
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    if (result && result.error) {
+      console.error(`Error de Servidor BPF: ${result.error}`);
+      return null;
+    }
+    
+    return result;
   } catch (error) {
-    console.error(`API Error (${action}):`, error);
+    console.error(`Fetch Fallido (${action}):`, error);
     return null;
   }
 }
@@ -31,7 +58,6 @@ export const dataService = {
     try {
       const data = localStorage.getItem(STORAGE_KEY_CONFIG);
       const savedConfig = data ? JSON.parse(data) : {};
-      // Fusionamos con DEFAULT_CONFIG para asegurar que todas las propiedades existan
       return { 
         ...DEFAULT_CONFIG, 
         ...savedConfig,
@@ -44,7 +70,7 @@ export const dataService = {
 
   saveConfig: async (config: AppConfig) => {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
-    await apiCall('saveConfig', 'POST', config);
+    return await apiCall('saveConfig', 'POST', config);
   },
 
   formatCurrency: (amount: number, currency: 'USD' | 'BS' = 'USD') => {
@@ -67,17 +93,25 @@ export const dataService = {
   },
 
   syncFromSheets: async () => {
+    console.log("Iniciando sincronización robusta...");
+    
     const remoteConfig = await apiCall('getConfig', 'GET');
-    if (remoteConfig) {
+    if (remoteConfig && !remoteConfig.error) {
       const currentConfig = dataService.getConfig();
       localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify({ ...currentConfig, ...remoteConfig }));
     }
 
     const remoteReps = await apiCall('getRepresentatives', 'GET');
-    if (remoteReps && Array.isArray(remoteReps)) localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+    if (remoteReps && Array.isArray(remoteReps)) {
+      localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+    }
 
     const remotePayments = await apiCall('getPayments', 'GET');
-    if (remotePayments && Array.isArray(remotePayments)) localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+    if (remotePayments && Array.isArray(remotePayments)) {
+      localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+    }
+    
+    console.log("Sincronización robusta completada.");
   },
 
   saveRepresentative: async (rep: Representative) => {
@@ -86,7 +120,7 @@ export const dataService = {
     if (exists > -1) current[exists] = rep;
     else current.push(rep);
     localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(current));
-    await apiCall('saveRepresentative', 'POST', rep);
+    return await apiCall('saveRepresentative', 'POST', rep);
   },
 
   getRepresentativeByCedula: (cedula: string): Representative | undefined => {
@@ -134,7 +168,7 @@ export const dataService = {
     if (idx > -1) {
       current[idx].status = status;
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
-      await apiCall('updatePaymentStatus', 'POST', { id, status });
+      return await apiCall('updatePaymentStatus', 'POST', { id, status });
     }
   },
 
@@ -143,11 +177,13 @@ export const dataService = {
     if (!rep) return 0;
     const config = dataService.getConfig();
     const currentMonthIndex = new Date().getMonth();
+    // Año escolar empieza en Septiembre (8)
     const monthsElapsed = currentMonthIndex >= 8 ? (currentMonthIndex - 8 + 1) : (currentMonthIndex + 4 + 1);
     
     let totalOwed = 0;
     rep.students.forEach(s => {
-      totalOwed += (config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0) * monthsElapsed;
+      const fee = config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0;
+      totalOwed += fee * monthsElapsed;
     });
 
     const totalPaid = dataService.getPayments()
