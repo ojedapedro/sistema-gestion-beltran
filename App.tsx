@@ -71,7 +71,7 @@ const App: React.FC = () => {
             <div className="bg-emerald-600/10 px-4 py-2 rounded-xl border border-emerald-200 flex items-center gap-2">
               <TrendingUp size={14} className="text-emerald-600" />
               <span className="text-[10px] font-black text-emerald-700 uppercase tracking-tighter">
-                Tasa: {config.exchangeRate.toFixed(2)} Bs/$
+                Tasa: {(config?.exchangeRate || 0).toFixed(2)} Bs/$
               </span>
             </div>
           </div>

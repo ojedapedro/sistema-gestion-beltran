@@ -28,8 +28,18 @@ async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
 
 export const dataService = {
   getConfig: (): AppConfig => {
-    const data = localStorage.getItem(STORAGE_KEY_CONFIG);
-    return data ? JSON.parse(data) : DEFAULT_CONFIG;
+    try {
+      const data = localStorage.getItem(STORAGE_KEY_CONFIG);
+      const savedConfig = data ? JSON.parse(data) : {};
+      // Fusionamos con DEFAULT_CONFIG para asegurar que todas las propiedades existan
+      return { 
+        ...DEFAULT_CONFIG, 
+        ...savedConfig,
+        monthlyFees: { ...DEFAULT_CONFIG.monthlyFees, ...(savedConfig.monthlyFees || {}) }
+      };
+    } catch (e) {
+      return DEFAULT_CONFIG;
+    }
   },
 
   saveConfig: async (config: AppConfig) => {
@@ -39,8 +49,9 @@ export const dataService = {
 
   formatCurrency: (amount: number, currency: 'USD' | 'BS' = 'USD') => {
     const config = dataService.getConfig();
+    const rate = config.exchangeRate || DEFAULT_CONFIG.exchangeRate;
     if (currency === 'BS') {
-      const bsAmount = amount * config.exchangeRate;
+      const bsAmount = amount * rate;
       return new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES' }).format(bsAmount);
     }
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
@@ -57,7 +68,10 @@ export const dataService = {
 
   syncFromSheets: async () => {
     const remoteConfig = await apiCall('getConfig', 'GET');
-    if (remoteConfig) localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
+    if (remoteConfig) {
+      const currentConfig = dataService.getConfig();
+      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify({ ...currentConfig, ...remoteConfig }));
+    }
 
     const remoteReps = await apiCall('getRepresentatives', 'GET');
     if (remoteReps && Array.isArray(remoteReps)) localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
@@ -88,6 +102,7 @@ export const dataService = {
     const config = dataService.getConfig();
     const current = dataService.getPayments();
     const amount = payment.amount || 0;
+    const rate = config.exchangeRate || DEFAULT_CONFIG.exchangeRate;
     
     const newPayment: PaymentRecord = {
       id: `PAY-${Date.now()}`,
@@ -100,8 +115,8 @@ export const dataService = {
       method: payment.method || PaymentMethod.EFECTIVO_USD,
       reference: payment.reference || '',
       amount: amount,
-      amountBs: amount * config.exchangeRate,
-      exchangeRate: config.exchangeRate,
+      amountBs: amount * rate,
+      exchangeRate: rate,
       observations: payment.observations || '',
       status: payment.status || PaymentStatus.PENDIENTE,
       type: payment.type || PaymentType.PAGO_TOTAL,
@@ -132,7 +147,7 @@ export const dataService = {
     
     let totalOwed = 0;
     rep.students.forEach(s => {
-      totalOwed += (config.monthlyFees[s.level] || 0) * monthsElapsed;
+      totalOwed += (config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0) * monthsElapsed;
     });
 
     const totalPaid = dataService.getPayments()
