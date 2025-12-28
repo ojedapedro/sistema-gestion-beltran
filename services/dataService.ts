@@ -1,16 +1,17 @@
 
-import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType, AppConfig, Level } from '../types';
+import { Representative, PaymentRecord, PaymentStatus, PaymentMethod, PaymentType, AppConfig, Level, Student } from '../types';
 import { DEFAULT_CONFIG, WEB_APP_URL } from '../constants';
 
 const STORAGE_KEY_REPRESENTATIVES = 'bpf_representatives';
 const STORAGE_KEY_PAYMENTS = 'bpf_payments';
 const STORAGE_KEY_CONFIG = 'bpf_config';
 
+/**
+ * Función de llamada a la API optimizada para evitar errores CORS con Google Apps Script.
+ * No usamos Content-Type: application/json en POST para evitar el pre-flight OPTIONS.
+ */
 async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
-  if (!WEB_APP_URL) {
-    console.warn("WEB_APP_URL no configurada.");
-    return null;
-  }
+  if (!WEB_APP_URL) return null;
 
   const baseUrl = WEB_APP_URL.trim();
   const url = method === 'GET' ? `${baseUrl}?action=${action}` : baseUrl;
@@ -19,36 +20,31 @@ async function apiCall(action: string, method: 'GET' | 'POST', data?: any) {
     const options: RequestInit = {
       method: method,
       mode: 'cors',
-      // 'follow' es vital para las redirecciones de Google Apps Script
-      redirect: 'follow', 
+      redirect: 'follow',
+      credentials: 'omit'
     };
 
     if (method === 'POST') {
-      /**
-       * IMPORTANTE: No usamos headers['Content-Type'] = 'application/json'.
-       * Google Apps Script acepta JSON enviado como texto plano.
-       * Esto evita el pre-vuelo OPTIONS de CORS (Failed to fetch).
-       */
+      // Enviamos como texto plano para evitar pre-flight CORS
       options.body = JSON.stringify({ action, data });
     }
 
     const response = await fetch(url, options);
     
-    // Si la respuesta es de tipo opaco (mode: 'no-cors'), no podremos leer el body.
-    // Pero aquí usamos mode: 'cors' y redirect: 'follow' para que funcione correctamente.
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      throw new Error(`Error de red: ${response.status}`);
     }
 
     const result = await response.json();
     if (result && result.error) {
-      console.error(`Error de Servidor BPF: ${result.error}`);
+      console.error("Error devuelto por el servidor:", result.error);
       return null;
     }
     
     return result;
   } catch (error) {
-    console.error(`Fetch Fallido (${action}):`, error);
+    console.error(`Fallo de comunicación (${action}):`, error);
+    // En caso de fallo total, retornamos null para que la app use el cache local
     return null;
   }
 }
@@ -77,14 +73,9 @@ export const dataService = {
     const config = dataService.getConfig();
     const rate = config.exchangeRate || DEFAULT_CONFIG.exchangeRate;
     if (currency === 'BS') {
-      const bsAmount = amount * rate;
-      return new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES' }).format(bsAmount);
+      return new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'VES' }).format(amount * rate);
     }
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
-  },
-
-  getDualAmount: (amountUSD: number) => {
-    return `${dataService.formatCurrency(amountUSD, 'USD')} (${dataService.formatCurrency(amountUSD, 'BS')})`;
   },
 
   getRepresentatives: (): Representative[] => {
@@ -93,25 +84,24 @@ export const dataService = {
   },
 
   syncFromSheets: async () => {
-    console.log("Iniciando sincronización robusta...");
-    
-    const remoteConfig = await apiCall('getConfig', 'GET');
-    if (remoteConfig && !remoteConfig.error) {
-      const currentConfig = dataService.getConfig();
-      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify({ ...currentConfig, ...remoteConfig }));
-    }
+    try {
+      const remoteConfig = await apiCall('getConfig', 'GET');
+      if (remoteConfig) {
+        localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify({ ...dataService.getConfig(), ...remoteConfig }));
+      }
 
-    const remoteReps = await apiCall('getRepresentatives', 'GET');
-    if (remoteReps && Array.isArray(remoteReps)) {
-      localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
-    }
+      const remoteReps = await apiCall('getRepresentatives', 'GET');
+      if (Array.isArray(remoteReps)) {
+        localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
+      }
 
-    const remotePayments = await apiCall('getPayments', 'GET');
-    if (remotePayments && Array.isArray(remotePayments)) {
-      localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+      const remotePayments = await apiCall('getPayments', 'GET');
+      if (Array.isArray(remotePayments)) {
+        localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
+      }
+    } catch (err) {
+      console.warn("Sincronización fallida, usando datos locales.");
     }
-    
-    console.log("Sincronización robusta completada.");
   },
 
   saveRepresentative: async (rep: Representative) => {
@@ -175,17 +165,27 @@ export const dataService = {
   calculatePendingBalance: (cedula: string): number => {
     const rep = dataService.getRepresentativeByCedula(cedula);
     if (!rep) return 0;
+    
     const config = dataService.getConfig();
-    const currentMonthIndex = new Date().getMonth();
-    // Año escolar empieza en Septiembre (8)
-    const monthsElapsed = currentMonthIndex >= 8 ? (currentMonthIndex - 8 + 1) : (currentMonthIndex + 4 + 1);
+    const now = new Date();
     
     let totalOwed = 0;
     rep.students.forEach(s => {
+      // Determinamos la fecha de inscripción
+      const enrollmentDate = s.enrollmentDate ? new Date(s.enrollmentDate) : new Date();
+      
+      // Calculamos la diferencia de meses
+      // Si se inscribe hoy, diffMonths será 1.
+      let diffMonths = (now.getFullYear() - enrollmentDate.getFullYear()) * 12 + (now.getMonth() - enrollmentDate.getMonth()) + 1;
+      
+      // Evitamos meses negativos o cero
+      const monthsToPay = Math.max(1, diffMonths);
+      
       const fee = config.monthlyFees[s.level] || DEFAULT_CONFIG.monthlyFees[s.level] || 0;
-      totalOwed += fee * monthsElapsed;
+      totalOwed += (fee * monthsToPay);
     });
 
+    // Restamos pagos VERIFICADOS
     const totalPaid = dataService.getPayments()
       .filter(p => p.cedulaRepresentative === cedula && p.status === PaymentStatus.VERIFICADO)
       .reduce((sum, p) => sum + p.amount, 0);
