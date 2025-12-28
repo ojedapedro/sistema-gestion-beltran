@@ -14,5 +14,5 @@ export const DEFAULT_CONFIG: AppConfig = {
 };
 
 export const GOOGLE_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
-export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx-upEeCkMmb4zdZEIW1OMA3vwjHvKYbZnWICPVkf9SrZOcqEBR_xdZDY2ZbEZTivgHdA/exec'; 
+export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycby8gNuLgleKd1cVGnn6kIPhxYudJT8OyHRjiNb0lPqEEje4EwJolUUZGcSGqMasbXzTiw/exec'; 
 export const SECTIONS = ['A', 'B', 'C', 'D'];
