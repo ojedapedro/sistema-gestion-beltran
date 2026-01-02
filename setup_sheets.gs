@@ -1,7 +1,7 @@
 
 /**
  * Backend Script Multi-Base de Datos para Colegio Beltrán Prieto Figueroa
- * Soporta Administración Central y Oficina Virtual
+ * Soporta Administración Central y Oficina Virtual unificadas
  */
 
 function getOrCreateSheet(name, ssid) {
@@ -16,15 +16,18 @@ function getOrCreateSheet(name, ssid) {
   
   var sheet = ss.getSheetByName(name);
   if (!sheet) {
-    sheet = ss.insertSheet(name);
-    var headers = {
-      "Pagos": ["id", "timestamp", "paymentDate", "cedulaRepresentative", "matricula", "level", "method", "reference", "amount", "amountBs", "exchangeRate", "observations", "status", "type", "pendingBalance"],
-      "Usuarios": ["cedula", "nombre", "matricula", "estudiantes_json", "createdAt"],
-      "Configuracion": ["key", "value"]
-    };
-    if (headers[name]) {
-      sheet.getRange(1, 1, 1, headers[name].length).setValues([headers[name]]).setFontWeight("bold").setBackground("#cbd5e1");
-      sheet.setFrozenRows(1);
+    // Solo creamos automáticamente las hojas de sistema, no la de OficinaVirtual (que suele venir de un Form)
+    if (name !== "OficinaVirtual") {
+      sheet = ss.insertSheet(name);
+      var headers = {
+        "Pagos": ["id", "timestamp", "paymentDate", "cedulaRepresentative", "matricula", "level", "method", "reference", "amount", "amountBs", "exchangeRate", "observations", "status", "type", "pendingBalance", "Nombre"],
+        "Usuarios": ["cedula", "nombre", "matricula", "estudiantes_json", "createdAt"],
+        "Configuracion": ["key", "value"]
+      };
+      if (headers[name]) {
+        sheet.getRange(1, 1, 1, headers[name].length).setValues([headers[name]]).setFontWeight("bold").setBackground("#cbd5e1");
+        sheet.setFrozenRows(1);
+      }
     }
   }
   return sheet;
@@ -40,6 +43,8 @@ function doGet(e) {
 
   try {
     var sheet;
+    
+    // Obtener Pagos Procesados (Pestaña "Pagos")
     if (action === "getPayments") {
       sheet = getOrCreateSheet("Pagos", ssid);
       if (!sheet) return createJsonResponse({ error: "No se encontró la hoja Pagos en el ID proporcionado" });
@@ -52,6 +57,33 @@ function doGet(e) {
         var obj = {};
         headers.forEach(function(h, i) {
           obj[h] = row[i];
+        });
+        return obj;
+      });
+      return createJsonResponse(result);
+    }
+
+    // Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual")
+    if (action === "getVirtualPayments") {
+      // Intentamos obtener la hoja OficinaVirtual directamente
+      var ss = ssid ? SpreadsheetApp.openById(ssid) : SpreadsheetApp.getActiveSpreadsheet();
+      sheet = ss.getSheetByName("OficinaVirtual");
+      
+      // Si no existe, devolvemos array vacío (quizás aun no hay respuestas del form)
+      if (!sheet) return createJsonResponse([]);
+      
+      var data = sheet.getDataRange().getValues();
+      if (data.length <= 1) return createJsonResponse([]);
+      
+      var headers = data[0];
+      // Mapeamos dinámicamente las columnas basándonos en los encabezados del formulario
+      var result = data.slice(1).map(function(row) {
+        var obj = {};
+        headers.forEach(function(h, i) {
+          // Normalizamos las claves para facilitar el uso en el frontend (ej: "Monto (USD)" -> "monto")
+          var key = h.toString().toLowerCase().trim();
+          obj[h] = row[i]; // Mantenemos la original
+          obj[key] = row[i]; // Versión normalizada
         });
         return obj;
       });
@@ -132,7 +164,7 @@ function doPost(e) {
       sheet = getOrCreateSheet("Pagos", ssid);
       var valuesP = sheet.getDataRange().getValues();
       for (var j = 1; j < valuesP.length; j++) {
-        // Buscamos por ID o por Referencia si el ID no existe (caso Virtual)
+        // Buscamos por ID o por Referencia si el ID no existe
         if (valuesP[j][0] === data.id || (data.reference && valuesP[j][7] === data.reference)) {
           // Buscamos la columna 'status' dinámicamente
           var headersP = valuesP[0];

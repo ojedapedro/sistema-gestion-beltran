@@ -77,26 +77,27 @@ export const dataService = {
   },
 
   syncFromSheets: async () => {
-    // 1. Sincronizar Configuración de Admin
+    // 1. Sincronizar Configuración (Pestaña Configuracion en ADMIN_SHEET_ID)
     const remoteConfig = await apiCall(WEB_APP_URL, 'getConfig', 'GET', ADMIN_SHEET_ID);
     if (remoteConfig && !remoteConfig.error) {
       localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
     }
 
-    // 2. Sincronizar Representantes de Admin
+    // 2. Sincronizar Representantes (Pestaña Usuarios en ADMIN_SHEET_ID)
     const remoteReps = await apiCall(WEB_APP_URL, 'getRepresentatives', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(remoteReps)) {
       localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
     }
 
-    // 3. Sincronizar Pagos de Admin
+    // 3. Sincronizar Pagos Verificados (Pestaña Pagos en ADMIN_SHEET_ID)
     const remotePayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(remotePayments)) {
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
     }
 
-    // 4. Sincronizar Pagos de Oficina Virtual
-    const virtualPayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET', VIRTUAL_SHEET_ID);
+    // 4. Sincronizar Pagos de Oficina Virtual (Pestaña OficinaVirtual en ADMIN_SHEET_ID)
+    // Nota: Usamos la nueva acción 'getVirtualPayments' pero apuntando a la MISMA hoja (ADMIN_SHEET_ID)
+    const virtualPayments = await apiCall(WEB_APP_URL, 'getVirtualPayments', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(virtualPayments)) {
       localStorage.setItem(STORAGE_KEY_VIRTUAL_PAYMENTS, JSON.stringify(virtualPayments));
     }
