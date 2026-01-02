@@ -19,6 +19,6 @@ export const ADMIN_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
 export const VIRTUAL_SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
 
 // URL del script
-export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyV7AWVLlDhh6V9jvHzWhfKHT6XSLQC7ypDhYdhKrejm55hkQMi5qcbsJeAr5VNEOiz2w/exec'; 
+export const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbyaJNPEjYIvz-tne99Ni8IH8zvx_Gvdku-73y8WQNv3dZ-BxzvJVgO_MkJEvGmMe6jQ0Q/exec'; 
 
 export const SECTIONS = ['A', 'B', 'C', 'D'];

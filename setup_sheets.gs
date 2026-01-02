@@ -4,41 +4,45 @@
  * Soporta Administración Central y Oficina Virtual unificadas
  */
 
+// ID ESPECÍFICO DE LA HOJA DE CÁLCULO SISTEMA BELTRAN PRIETO FIGUEROA
+var SHEET_ID = '1vhTFY-DLkHZIvTozAj-_ZiJDLftgkHmh494OM9EjDdQ';
+
 function getOrCreateSheet(name, ssid) {
   var ss;
   try {
-    // Si se pasa un ssid en la petición, lo usamos. Si no, usamos el activo.
-    ss = ssid ? SpreadsheetApp.openById(ssid) : SpreadsheetApp.getActiveSpreadsheet();
+    var targetId = ssid || SHEET_ID;
+    ss = SpreadsheetApp.openById(targetId);
   } catch(e) {
     console.error("Error abriendo hoja: " + e.toString());
     return null;
   }
   
   var sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    // Solo creamos automáticamente las hojas de sistema, no la de OficinaVirtual (que suele venir de un Form)
-    if (name !== "OficinaVirtual") {
-      sheet = ss.insertSheet(name);
-      var headers = {
-        "Pagos": ["id", "timestamp", "paymentDate", "cedulaRepresentative", "matricula", "level", "method", "reference", "amount", "amountBs", "exchangeRate", "observations", "status", "type", "pendingBalance", "Nombre"],
-        "Usuarios": ["cedula", "nombre", "matricula", "estudiantes_json", "createdAt"],
-        "Configuracion": ["key", "value"]
-      };
-      if (headers[name]) {
-        sheet.getRange(1, 1, 1, headers[name].length).setValues([headers[name]]).setFontWeight("bold").setBackground("#cbd5e1");
-        sheet.setFrozenRows(1);
-      }
+  if (!sheet && name !== "OficinaVirtual") {
+    sheet = ss.insertSheet(name);
+    var headers = {
+      "Pagos": ["id", "timestamp", "paymentDate", "cedulaRepresentative", "matricula", "level", "method", "reference", "amount", "amountBs", "exchangeRate", "observations", "status", "type", "pendingBalance", "Nombre"],
+      "Usuarios": ["cedula", "nombre", "matricula", "estudiantes_json", "createdAt"],
+      "Configuracion": ["key", "value"]
+    };
+    if (headers[name]) {
+      sheet.getRange(1, 1, 1, headers[name].length).setValues([headers[name]]).setFontWeight("bold").setBackground("#cbd5e1");
+      sheet.setFrozenRows(1);
     }
   }
   return sheet;
 }
 
+function normalizeHeader(h) {
+  if (!h) return "";
+  return h.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+}
+
 function doGet(e) {
   var action = e.parameter.action;
-  var ssid = e.parameter.ssid; // Recibir ID de hoja dinámico
   
   if (!action) {
-    return createJsonResponse({ status: "Online", message: "Servidor BPF Activo. Esperando acción...", ssid_received: ssid || "Default" });
+    return createJsonResponse({ status: "Online", message: "Servidor BPF Conectado a BD Única." });
   }
 
   try {
@@ -46,8 +50,8 @@ function doGet(e) {
     
     // Obtener Pagos Procesados (Pestaña "Pagos")
     if (action === "getPayments") {
-      sheet = getOrCreateSheet("Pagos", ssid);
-      if (!sheet) return createJsonResponse({ error: "No se encontró la hoja Pagos en el ID proporcionado" });
+      sheet = getOrCreateSheet("Pagos", SHEET_ID);
+      if (!sheet) return createJsonResponse({ error: "No se encontró la pestaña Pagos" });
       
       var data = sheet.getDataRange().getValues();
       if (data.length <= 1) return createJsonResponse([]);
@@ -65,25 +69,30 @@ function doGet(e) {
 
     // Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual")
     if (action === "getVirtualPayments") {
-      // Intentamos obtener la hoja OficinaVirtual directamente
-      var ss = ssid ? SpreadsheetApp.openById(ssid) : SpreadsheetApp.getActiveSpreadsheet();
+      var ss = SpreadsheetApp.openById(SHEET_ID);
       sheet = ss.getSheetByName("OficinaVirtual");
       
-      // Si no existe, devolvemos array vacío (quizás aun no hay respuestas del form)
       if (!sheet) return createJsonResponse([]);
       
       var data = sheet.getDataRange().getValues();
       if (data.length <= 1) return createJsonResponse([]);
       
       var headers = data[0];
-      // Mapeamos dinámicamente las columnas basándonos en los encabezados del formulario
+      
       var result = data.slice(1).map(function(row) {
         var obj = {};
         headers.forEach(function(h, i) {
-          // Normalizamos las claves para facilitar el uso en el frontend (ej: "Monto (USD)" -> "monto")
-          var key = h.toString().toLowerCase().trim();
-          obj[h] = row[i]; // Mantenemos la original
-          obj[key] = row[i]; // Versión normalizada
+          var headerName = h.toString();
+          obj[headerName] = row[i]; // Mantener llave original
+          
+          // Normalización para mapeo inteligente
+          var normH = normalizeHeader(h);
+          
+          if (normH.includes("cedula") || normH.includes("ci")) obj["cedulaRepresentative"] = row[i];
+          if (normH.includes("referencia") || normH.includes("ref")) obj["reference"] = row[i];
+          if (normH.includes("monto") || normH.includes("amount") || normH.includes("valor") || normH.includes("cantidad")) obj["amount"] = row[i];
+          if (normH.includes("metodo") || normH.includes("forma") || normH.includes("tipo")) obj["method"] = row[i];
+          if (normH.includes("fecha") || normH.includes("date")) obj["paymentDate"] = row[i];
         });
         return obj;
       });
@@ -91,7 +100,7 @@ function doGet(e) {
     }
 
     if (action === "getRepresentatives") {
-      sheet = getOrCreateSheet("Usuarios", ssid);
+      sheet = getOrCreateSheet("Usuarios", SHEET_ID);
       var dataR = sheet.getDataRange().getValues();
       if (dataR.length <= 1) return createJsonResponse([]);
       return createJsonResponse(dataR.slice(1).map(function(row) {
@@ -106,7 +115,7 @@ function doGet(e) {
     }
 
     if (action === "getConfig") {
-      sheet = getOrCreateSheet("Configuracion", ssid);
+      sheet = getOrCreateSheet("Configuracion", SHEET_ID);
       var dataC = sheet.getDataRange().getValues();
       var config = {};
       dataC.slice(1).forEach(function(row) {
@@ -128,11 +137,10 @@ function doPost(e) {
     var body = JSON.parse(e.postData.contents);
     var action = body.action;
     var data = body.data;
-    var ssid = body.ssid; // Recibir ID de hoja dinámico en POST
     var sheet;
 
     if (action === "addPayment") {
-      sheet = getOrCreateSheet("Pagos", ssid);
+      sheet = getOrCreateSheet("Pagos", SHEET_ID);
       var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       var newRow = headers.map(function(h) {
         return data[h] !== undefined ? data[h] : "";
@@ -142,7 +150,7 @@ function doPost(e) {
     }
 
     if (action === "saveRepresentative") {
-      sheet = getOrCreateSheet("Usuarios", ssid);
+      sheet = getOrCreateSheet("Usuarios", SHEET_ID);
       var values = sheet.getDataRange().getValues();
       var rowIndex = -1;
       for (var i = 1; i < values.length; i++) {
@@ -161,12 +169,10 @@ function doPost(e) {
     }
 
     if (action === "updatePaymentStatus") {
-      sheet = getOrCreateSheet("Pagos", ssid);
+      sheet = getOrCreateSheet("Pagos", SHEET_ID);
       var valuesP = sheet.getDataRange().getValues();
       for (var j = 1; j < valuesP.length; j++) {
-        // Buscamos por ID o por Referencia si el ID no existe
         if (valuesP[j][0] === data.id || (data.reference && valuesP[j][7] === data.reference)) {
-          // Buscamos la columna 'status' dinámicamente
           var headersP = valuesP[0];
           var statusCol = headersP.indexOf("status") + 1;
           if (statusCol > 0) {
@@ -175,6 +181,18 @@ function doPost(e) {
           break;
         }
       }
+      return createJsonResponse({ success: true });
+    }
+    
+    if (action === "saveConfig") {
+      sheet = getOrCreateSheet("Configuracion", SHEET_ID);
+      sheet.clearContents();
+      sheet.appendRow(["key", "value"]);
+      var keys = Object.keys(data);
+      keys.forEach(function(k) {
+        var val = typeof data[k] === 'object' ? JSON.stringify(data[k]) : data[k];
+        sheet.appendRow([k, val]);
+      });
       return createJsonResponse({ success: true });
     }
 

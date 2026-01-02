@@ -3,22 +3,39 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { dataService } from '../services/dataService';
 import { notificationService } from '../services/notificationService';
 import { PaymentRecord, PaymentStatus, NotificationCategory, NotificationRecipient, PaymentType } from '../types';
-import { CheckCircle, XCircle, Globe, Smartphone } from 'lucide-react';
+import { CheckCircle, XCircle, Globe, Smartphone, RefreshCw } from 'lucide-react';
 
 const PaymentVerification: React.FC = () => {
   const [internalPayments, setInternalPayments] = useState<PaymentRecord[]>([]);
   const [virtualPayments, setVirtualPayments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const loadData = () => {
     setInternalPayments(dataService.getPayments());
     setVirtualPayments(dataService.getVirtualPayments());
   };
 
-  useEffect(() => {
-    // Carga inicial y auto-refresco silencioso
+  const handleSync = async () => {
+    setLoading(true);
+    await dataService.syncFromSheets();
     loadData();
-    dataService.syncFromSheets().then(() => loadData());
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadData();
+    // Intento de auto-sync al montar para asegurar datos frescos
+    handleSync();
   }, []);
+
+  // Función robusta para limpiar montos (ej: "20,00" -> 20)
+  const parseAmount = (val: any) => {
+    if (typeof val === 'number') return val;
+    if (!val) return 0;
+    // Convierte comas a puntos y elimina cualquier caracter que no sea número, punto o guión
+    const str = val.toString().replace(',', '.').replace(/[^\d.-]/g, '');
+    return parseFloat(str) || 0;
+  };
 
   const pendingCombined = useMemo(() => {
     // 1. Pagos internos pendientes
@@ -51,7 +68,8 @@ const PaymentVerification: React.FC = () => {
         cedulaRepresentative: (vp.cedulaRepresentative || vp.cedula || '').toString(),
         method: vp.method || vp.metodo || 'Pago Móvil',
         reference: (vp.reference || vp.referencia || 'S/R').toString(),
-        amount: parseFloat(vp.amount || vp.monto || 0),
+        // Parseamos el monto de forma segura
+        amount: parseAmount(vp.amount || vp.monto),
         status: PaymentStatus.PENDIENTE,
         source: 'VIRTUAL',
         raw: vp 
@@ -61,14 +79,15 @@ const PaymentVerification: React.FC = () => {
   }, [internalPayments, virtualPayments]);
 
   const handleApprove = async (payment: any) => {
+    setLoading(true);
     if (payment.source === 'VIRTUAL') {
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
       const newPayment: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
-        level: rep?.students.map((s:any) => s.level).join(', ') || 'Desconocido',
-        sections: rep?.students.map((s:any) => s.section).join(', ') || 'N/A',
+        level: rep?.students?.map((s:any) => s.level).join(', ') || 'Desconocido',
+        sections: rep?.students?.map((s:any) => s.section).join(', ') || 'N/A',
         method: payment.method as any,
         amount: payment.amount,
         reference: payment.reference,
@@ -84,19 +103,18 @@ const PaymentVerification: React.FC = () => {
 
     notificationService.sendNotification({
       title: `Pago Verificado`,
-      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) ha sido verificado y conciliado.`,
+      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) ha sido verificado.`,
       category: NotificationCategory.VERIFICATION,
       recipient: NotificationRecipient.REPRESENTATIVE
     });
 
-    // Pequeño delay para permitir que la API responda antes de recargar
-    setTimeout(async () => {
-      await dataService.syncFromSheets();
-      loadData();
-    }, 500);
+    await dataService.syncFromSheets();
+    loadData();
+    setLoading(false);
   };
 
   const handleReject = async (payment: any) => {
+    setLoading(true);
     if (payment.source === 'INTERNO') {
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.RECHAZADO);
     } else {
@@ -105,8 +123,8 @@ const PaymentVerification: React.FC = () => {
       const rejectionRecord: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
-        level: rep?.students.map((s:any) => s.level).join(', ') || 'N/A',
-        sections: rep?.students.map((s:any) => s.section).join(', ') || 'N/A',
+        level: rep?.students?.map((s:any) => s.level).join(', ') || 'N/A',
+        sections: rep?.students?.map((s:any) => s.section).join(', ') || 'N/A',
         method: payment.method as any,
         amount: payment.amount,
         reference: payment.reference,
@@ -125,10 +143,9 @@ const PaymentVerification: React.FC = () => {
       recipient: NotificationRecipient.REPRESENTATIVE
     });
     
-    setTimeout(async () => {
-      await dataService.syncFromSheets();
-      loadData();
-    }, 500);
+    await dataService.syncFromSheets();
+    loadData();
+    setLoading(false);
   };
 
   return (
@@ -138,6 +155,14 @@ const PaymentVerification: React.FC = () => {
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Centro de Verificación</h1>
           <p className="text-slate-500 font-medium text-sm">Validación unificada de transacciones</p>
         </div>
+        <button 
+          onClick={handleSync} 
+          disabled={loading}
+          className="p-2 rounded-xl bg-slate-100 text-slate-600 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+          title="Refrescar datos de la nube"
+        >
+          <RefreshCw size={20} className={loading ? 'animate-spin' : ''} />
+        </button>
       </div>
 
       <div className="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden card-stylized">
@@ -198,15 +223,17 @@ const PaymentVerification: React.FC = () => {
                       <div className="flex justify-center gap-2">
                         <button 
                           onClick={() => handleApprove(p)}
-                          className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm hover:shadow-emerald-200 active:scale-90"
+                          className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm hover:shadow-emerald-200 active:scale-90 disabled:opacity-50"
                           title="Verificar y Abonar"
+                          disabled={loading}
                         >
                           <CheckCircle size={18} />
                         </button>
                         <button 
                           onClick={() => handleReject(p)}
-                          className="p-3 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-600 hover:text-white transition-all shadow-sm hover:shadow-rose-200 active:scale-90"
+                          className="p-3 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-600 hover:text-white transition-all shadow-sm hover:shadow-rose-200 active:scale-90 disabled:opacity-50"
                           title="Rechazar"
+                          disabled={loading}
                         >
                           <XCircle size={18} />
                         </button>
