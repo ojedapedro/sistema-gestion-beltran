@@ -42,13 +42,13 @@ function doGet(e) {
   var action = e.parameter.action;
   
   if (!action) {
-    return createJsonResponse({ status: "Online", message: "Servidor BPF Conectado a BD Única." });
+    return createJsonResponse({ status: "Online", message: "Servidor BPF Conectado." });
   }
 
   try {
     var sheet;
     
-    // Obtener Pagos Procesados (Pestaña "Pagos")
+    // 1. Obtener Pagos Procesados (Pestaña "Pagos" - Base Principal)
     if (action === "getPayments") {
       sheet = getOrCreateSheet("Pagos", SHEET_ID);
       if (!sheet) return createJsonResponse({ error: "No se encontró la pestaña Pagos" });
@@ -67,45 +67,58 @@ function doGet(e) {
       return createJsonResponse(result);
     }
 
-    // Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual" con IMPORTRANGE)
+    // 2. Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual")
+    // AHORA SOPORTA ESCRITURA: Filtramos los que ya dicen "PROCESADO"
     if (action === "getVirtualPayments") {
       var ss = SpreadsheetApp.openById(SHEET_ID);
       sheet = ss.getSheetByName("OficinaVirtual");
       
       if (!sheet) return createJsonResponse([]);
       
-      // Obtenemos valores de visualización (getDisplayValues) para manejar fechas y números formateados mejor
+      // Usamos getDisplayValues para preservar formatos de fecha y moneda visuales
       var data = sheet.getDataRange().getDisplayValues(); 
       if (data.length <= 1) return createJsonResponse([]);
       
       var headers = data[0];
       
-      var result = data.slice(1).map(function(row) {
-        var obj = {};
-        headers.forEach(function(h, i) {
+      // Buscamos si existe columna de control de sistema
+      var statusIndex = -1;
+      headers.forEach(function(h, i) {
+        if (normalizeHeader(h) === "estatussistema" || normalizeHeader(h) === "systemstatus") statusIndex = i;
+      });
+
+      var result = [];
+      
+      // Iteramos datos (empezando fila 2 -> índice 1)
+      for (var i = 1; i < data.length; i++) {
+        var row = data[i];
+        
+        // SI YA ESTÁ PROCESADO, LO SALTAMOS
+        if (statusIndex > -1 && (row[statusIndex] === "PROCESADO" || row[statusIndex] === "RECHAZADO_SISTEMA")) {
+          continue; 
+        }
+
+        var obj = {
+          _rowIndex: i + 1 // Importante: Guardamos el número de fila real (base 1) para poder editarlo luego
+        };
+
+        headers.forEach(function(h, colIndex) {
           var headerName = h.toString();
-          obj[headerName] = row[i]; // Mantener llave original
+          obj[headerName] = row[colIndex];
           
-          // Normalización HEURÍSTICA para encontrar columnas aunque cambien de nombre
+          // Normalización para mapeo inteligente
           var normH = normalizeHeader(h);
           
-          // Identificación de Cédula
-          if (normH.includes("cedula") || normH.includes("ci") || normH.includes("identidad")) obj["cedulaRepresentative"] = row[i];
-          
-          // Identificación de Referencia
-          if (normH.includes("referencia") || normH.includes("ref") || normH.includes("comprobante") || normH.includes("numero")) obj["reference"] = row[i];
-          
-          // Identificación de Monto (Crucial: busca palabras clave comunes en formularios)
-          if (normH.includes("monto") || normH.includes("amount") || normH.includes("valor") || normH.includes("cantidad") || normH.includes("importe")) obj["amount"] = row[i];
-          
-          // Identificación de Método
-          if (normH.includes("metodo") || normH.includes("forma") || normH.includes("banco") || normH.includes("modalidad")) obj["method"] = row[i];
-          
-          // Identificación de Fecha
-          if (normH.includes("fecha") || normH.includes("date") || normH.includes("cuando") || normH.includes("marca temporal")) obj["paymentDate"] = row[i];
+          if (normH.includes("cedula") || normH.includes("ci") || normH.includes("identidad")) obj["cedulaRepresentative"] = row[colIndex];
+          if (normH.includes("referencia") || normH.includes("ref") || normH.includes("comprobante")) obj["reference"] = row[colIndex];
+          if (normH.includes("monto") || normH.includes("amount") || normH.includes("importe")) obj["amount"] = row[colIndex];
+          if (normH.includes("metodo") || normH.includes("forma") || normH.includes("banco")) obj["method"] = row[colIndex];
+          if (normH.includes("fecha") || normH.includes("date") || normH.includes("marca")) obj["paymentDate"] = row[colIndex];
         });
-        return obj;
-      });
+        
+        result.push(obj);
+      }
+      
       return createJsonResponse(result);
     }
 
@@ -148,6 +161,37 @@ function doPost(e) {
     var action = body.action;
     var data = body.data;
     var sheet;
+
+    // Acción para marcar un pago virtual como procesado en la hoja ORIGEN
+    if (action === "markVirtualProcessed") {
+      var ss = SpreadsheetApp.openById(SHEET_ID);
+      sheet = ss.getSheetByName("OficinaVirtual");
+      var rowIndex = parseInt(data.rowIndex);
+      
+      if (!sheet || isNaN(rowIndex)) return createJsonResponse({ error: "Datos inválidos" });
+
+      // Buscar o crear columna "EstatusSistema"
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var statusCol = -1;
+      
+      for (var i = 0; i < headers.length; i++) {
+        if (normalizeHeader(headers[i]) === "estatussistema") {
+          statusCol = i + 1;
+          break;
+        }
+      }
+
+      // Si no existe la columna, la creamos al final
+      if (statusCol === -1) {
+        statusCol = headers.length + 1;
+        sheet.getRange(1, statusCol).setValue("EstatusSistema").setFontWeight("bold");
+      }
+
+      // Escribir el estatus en la fila correspondiente
+      sheet.getRange(rowIndex, statusCol).setValue(data.status || "PROCESADO");
+      
+      return createJsonResponse({ success: true });
+    }
 
     if (action === "addPayment") {
       sheet = getOrCreateSheet("Pagos", SHEET_ID);

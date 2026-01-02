@@ -27,28 +27,19 @@ const PaymentVerification: React.FC = () => {
     handleSync();
   }, []);
 
-  // Función robusta para limpiar montos y detectar formato Venezolano vs Internacional
   const parseAmount = (val: any) => {
     if (typeof val === 'number') return val;
     if (!val) return 0;
     
     let str = val.toString().trim();
-    
-    // Si viene vacio o solo simbolos
     if (!str.match(/\d/)) return 0;
 
-    // Limpieza básica de moneda y letras
     str = str.replace(/[^\d.,-]/g, '');
 
-    // Detección de formato Venezolano/Europeo (1.200,50 o 20,00)
-    // Lógica: Si hay coma y (no hay punto o la coma está DESPUÉS del punto) -> Coma es decimal
     if (str.includes(',') && (!str.includes('.') || str.indexOf(',') > str.indexOf('.'))) {
-        // Eliminar puntos de miles
         str = str.replace(/\./g, '');
-        // Reemplazar coma decimal por punto
         str = str.replace(',', '.');
     } else {
-        // Formato Inglés/Standard (1,200.50) -> Eliminar comas
         str = str.replace(/,/g, '');
     }
 
@@ -56,39 +47,18 @@ const PaymentVerification: React.FC = () => {
   };
 
   const pendingCombined = useMemo(() => {
-    // 1. Pagos internos (cargados manualmente) pendientes
+    // 1. Pagos internos
     const internal = internalPayments
       .filter(p => p.status === PaymentStatus.PENDIENTE)
-      .map(p => ({ ...p, source: 'INTERNO' }));
+      .map(p => ({ ...p, source: 'INTERNO', rowIndex: -1 }));
 
-    // 2. Set de referencias YA procesadas (Verificadas o Rechazadas) en la BD principal
-    // Normalizamos quitando espacios, ceros a la izquierda y todo a minúscula
-    const processedRefs = new Set(internalPayments
-      .filter(p => p.reference) // Solo si tiene referencia
-      .map(p => p.reference.toString().trim().toLowerCase())
-    );
-    
-    // 3. Pagos virtuales (IMPORTRANGE)
-    // Lógica: Solo mostramos los que SU REFERENCIA NO ESTÉ YA en la lista de procesados.
-    const virtual = virtualPayments
-      .filter(vp => {
-        // Obtenemos la referencia cruda
-        const refRaw = vp.reference || vp.referencia || vp.comprobante || '';
-        const ref = refRaw.toString().trim().toLowerCase();
-        
-        // Si no tiene referencia, lo mostramos (es sospechoso/manual)
-        if (!ref) return true;
-        
-        // Si la referencia YA EXISTE en nuestros pagos procesados, lo ocultamos
-        // Esto "simula" que se ha verificado sin tocar la hoja IMPORTRANGE
-        return !processedRefs.has(ref);
-      })
-      .map(vp => {
+    // 2. Pagos virtuales (Filtramos los que ya devuelve el backend como NO procesados)
+    const virtual = virtualPayments.map(vp => {
         const rawAmount = vp.amount || vp.monto || vp.importe || '0';
         const parsedAmount = parseAmount(rawAmount);
 
         return {
-          id: vp.id || `VIRT-${(vp.reference || 'NOREFERENCE')}-${Math.random().toString(36).substr(2, 5)}`,
+          id: vp.id || `VIRT-${(vp.reference || 'NOREFERENCE')}`,
           paymentDate: vp.paymentDate || vp.fecha || new Date().toISOString().split('T')[0],
           cedulaRepresentative: (vp.cedulaRepresentative || vp.cedula || 'S/I').toString(),
           method: vp.method || vp.metodo || 'Pago Móvil',
@@ -96,6 +66,7 @@ const PaymentVerification: React.FC = () => {
           amount: parsedAmount,
           status: PaymentStatus.PENDIENTE,
           source: 'VIRTUAL',
+          rowIndex: vp._rowIndex, // Índice de fila para actualizar el Excel
           raw: vp 
         };
       });
@@ -106,10 +77,10 @@ const PaymentVerification: React.FC = () => {
   const handleApprove = async (payment: any) => {
     setLoading(true);
     
-    // Si es virtual, CREAMOS un nuevo registro en la BD principal
     if (payment.source === 'VIRTUAL') {
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
+      // 1. Crear el pago oficial en la BD principal
       const newPayment: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
@@ -117,15 +88,20 @@ const PaymentVerification: React.FC = () => {
         sections: rep?.students?.map((s:any) => s.section).join(', ') || 'N/A',
         method: payment.method as any,
         amount: payment.amount,
-        reference: payment.reference, // Esta referencia ahora bloqueará que vuelva a aparecer
+        reference: payment.reference,
         status: PaymentStatus.VERIFICADO,
         type: PaymentType.PAGO_TOTAL,
-        observations: 'Verificado desde Oficina Virtual (IMPORTRANGE)'
+        observations: 'Verificado desde Oficina Virtual'
       };
       
       await dataService.addPayment(newPayment);
+
+      // 2. Marcar en la hoja de Oficina Virtual como PROCESADO para que no salga más
+      if (payment.rowIndex && payment.rowIndex > 0) {
+        await dataService.markVirtualProcessed(payment.rowIndex, 'PROCESADO');
+      }
+
     } else {
-      // Si es interno, solo actualizamos el status
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.VERIFICADO);
     }
 
@@ -136,9 +112,8 @@ const PaymentVerification: React.FC = () => {
       recipient: NotificationRecipient.REPRESENTATIVE
     });
 
-    await dataService.syncFromSheets();
-    loadData();
-    setLoading(false);
+    // Refrescar lista completa
+    await handleSync();
   };
 
   const handleReject = async (payment: any) => {
@@ -146,10 +121,8 @@ const PaymentVerification: React.FC = () => {
     if (payment.source === 'INTERNO') {
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.RECHAZADO);
     } else {
-      // Para rechazar un virtual, CREAMOS un registro con status RECHAZADO
-      // Esto hace que la referencia entre en "processedRefs" y desaparezca de la lista
+      // 1. Crear registro de rechazo en BD Principal (opcional, para historial)
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
-      
       const rejectionRecord: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
@@ -162,8 +135,12 @@ const PaymentVerification: React.FC = () => {
         type: PaymentType.PAGO_TOTAL,
         observations: 'Rechazado desde Oficina Virtual'
       };
-      
       await dataService.addPayment(rejectionRecord);
+
+      // 2. Marcar en hoja virtual como RECHAZADO para quitarlo de la lista pendiente
+      if (payment.rowIndex && payment.rowIndex > 0) {
+        await dataService.markVirtualProcessed(payment.rowIndex, 'RECHAZADO_SISTEMA');
+      }
     }
     
     notificationService.sendNotification({
@@ -173,9 +150,7 @@ const PaymentVerification: React.FC = () => {
       recipient: NotificationRecipient.REPRESENTATIVE
     });
     
-    await dataService.syncFromSheets();
-    loadData();
-    setLoading(false);
+    await handleSync();
   };
 
   return (
@@ -264,7 +239,7 @@ const PaymentVerification: React.FC = () => {
                         <button 
                           onClick={() => handleApprove(p)}
                           className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm hover:shadow-emerald-200 active:scale-90 disabled:opacity-50"
-                          title="Verificar y Guardar en BD Principal"
+                          title="Verificar, Guardar y Cerrar en Virtual"
                           disabled={loading}
                         >
                           <CheckCircle size={18} />
@@ -272,7 +247,7 @@ const PaymentVerification: React.FC = () => {
                         <button 
                           onClick={() => handleReject(p)}
                           className="p-3 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-600 hover:text-white transition-all shadow-sm hover:shadow-rose-200 active:scale-90 disabled:opacity-50"
-                          title="Rechazar y Ocultar"
+                          title="Rechazar"
                           disabled={loading}
                         >
                           <XCircle size={18} />

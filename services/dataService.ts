@@ -77,26 +77,26 @@ export const dataService = {
   },
 
   syncFromSheets: async () => {
-    // 1. Sincronizar Configuración (Pestaña Configuracion en ADMIN_SHEET_ID)
+    // 1. Sincronizar Configuración
     const remoteConfig = await apiCall(WEB_APP_URL, 'getConfig', 'GET', ADMIN_SHEET_ID);
     if (remoteConfig && !remoteConfig.error) {
       localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(remoteConfig));
     }
 
-    // 2. Sincronizar Representantes (Pestaña Usuarios en ADMIN_SHEET_ID)
+    // 2. Sincronizar Representantes
     const remoteReps = await apiCall(WEB_APP_URL, 'getRepresentatives', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(remoteReps)) {
       localStorage.setItem(STORAGE_KEY_REPRESENTATIVES, JSON.stringify(remoteReps));
     }
 
-    // 3. Sincronizar Pagos Verificados (Pestaña Pagos en ADMIN_SHEET_ID)
+    // 3. Sincronizar Pagos Verificados
     const remotePayments = await apiCall(WEB_APP_URL, 'getPayments', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(remotePayments)) {
       localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(remotePayments));
     }
 
-    // 4. Sincronizar Pagos de Oficina Virtual (Pestaña OficinaVirtual en ADMIN_SHEET_ID)
-    // Nota: Usamos la nueva acción 'getVirtualPayments' pero apuntando a la MISMA hoja (ADMIN_SHEET_ID)
+    // 4. Sincronizar Pagos de Oficina Virtual
+    // Ahora devuelve solo los que NO están procesados
     const virtualPayments = await apiCall(WEB_APP_URL, 'getVirtualPayments', 'GET', ADMIN_SHEET_ID);
     if (Array.isArray(virtualPayments)) {
       localStorage.setItem(STORAGE_KEY_VIRTUAL_PAYMENTS, JSON.stringify(virtualPayments));
@@ -148,9 +148,15 @@ export const dataService = {
     
     current.push(newPayment);
     localStorage.setItem(STORAGE_KEY_PAYMENTS, JSON.stringify(current));
+    
     // Guardamos en la base de Administración
     await apiCall(WEB_APP_URL, 'addPayment', 'POST', ADMIN_SHEET_ID, newPayment);
     return newPayment;
+  },
+
+  // Nueva función para marcar un pago como procesado en la hoja de Oficina Virtual
+  markVirtualProcessed: async (rowIndex: number, status: 'PROCESADO' | 'RECHAZADO_SISTEMA') => {
+    return await apiCall(WEB_APP_URL, 'markVirtualProcessed', 'POST', ADMIN_SHEET_ID, { rowIndex, status });
   },
 
   updatePaymentStatus: async (id: string, status: PaymentStatus, reference?: string) => {
