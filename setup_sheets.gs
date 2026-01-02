@@ -67,14 +67,15 @@ function doGet(e) {
       return createJsonResponse(result);
     }
 
-    // Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual")
+    // Obtener Pagos de Oficina Virtual (Pestaña "OficinaVirtual" con IMPORTRANGE)
     if (action === "getVirtualPayments") {
       var ss = SpreadsheetApp.openById(SHEET_ID);
       sheet = ss.getSheetByName("OficinaVirtual");
       
       if (!sheet) return createJsonResponse([]);
       
-      var data = sheet.getDataRange().getValues();
+      // Obtenemos valores de visualización (getDisplayValues) para manejar fechas y números formateados mejor
+      var data = sheet.getDataRange().getDisplayValues(); 
       if (data.length <= 1) return createJsonResponse([]);
       
       var headers = data[0];
@@ -85,14 +86,23 @@ function doGet(e) {
           var headerName = h.toString();
           obj[headerName] = row[i]; // Mantener llave original
           
-          // Normalización para mapeo inteligente
+          // Normalización HEURÍSTICA para encontrar columnas aunque cambien de nombre
           var normH = normalizeHeader(h);
           
-          if (normH.includes("cedula") || normH.includes("ci")) obj["cedulaRepresentative"] = row[i];
-          if (normH.includes("referencia") || normH.includes("ref")) obj["reference"] = row[i];
-          if (normH.includes("monto") || normH.includes("amount") || normH.includes("valor") || normH.includes("cantidad")) obj["amount"] = row[i];
-          if (normH.includes("metodo") || normH.includes("forma") || normH.includes("tipo")) obj["method"] = row[i];
-          if (normH.includes("fecha") || normH.includes("date")) obj["paymentDate"] = row[i];
+          // Identificación de Cédula
+          if (normH.includes("cedula") || normH.includes("ci") || normH.includes("identidad")) obj["cedulaRepresentative"] = row[i];
+          
+          // Identificación de Referencia
+          if (normH.includes("referencia") || normH.includes("ref") || normH.includes("comprobante") || normH.includes("numero")) obj["reference"] = row[i];
+          
+          // Identificación de Monto (Crucial: busca palabras clave comunes en formularios)
+          if (normH.includes("monto") || normH.includes("amount") || normH.includes("valor") || normH.includes("cantidad") || normH.includes("importe")) obj["amount"] = row[i];
+          
+          // Identificación de Método
+          if (normH.includes("metodo") || normH.includes("forma") || normH.includes("banco") || normH.includes("modalidad")) obj["method"] = row[i];
+          
+          // Identificación de Fecha
+          if (normH.includes("fecha") || normH.includes("date") || normH.includes("cuando") || normH.includes("marca temporal")) obj["paymentDate"] = row[i];
         });
         return obj;
       });

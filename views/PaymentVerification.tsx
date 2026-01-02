@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { dataService } from '../services/dataService';
 import { notificationService } from '../services/notificationService';
 import { PaymentRecord, PaymentStatus, NotificationCategory, NotificationRecipient, PaymentType } from '../types';
-import { CheckCircle, XCircle, Globe, Smartphone, RefreshCw } from 'lucide-react';
+import { CheckCircle, XCircle, Globe, Smartphone, RefreshCw, AlertTriangle } from 'lucide-react';
 
 const PaymentVerification: React.FC = () => {
   const [internalPayments, setInternalPayments] = useState<PaymentRecord[]>([]);
@@ -24,62 +24,89 @@ const PaymentVerification: React.FC = () => {
 
   useEffect(() => {
     loadData();
-    // Intento de auto-sync al montar para asegurar datos frescos
     handleSync();
   }, []);
 
-  // Función robusta para limpiar montos (ej: "20,00" -> 20)
+  // Función robusta para limpiar montos y detectar formato Venezolano vs Internacional
   const parseAmount = (val: any) => {
     if (typeof val === 'number') return val;
     if (!val) return 0;
-    // Convierte comas a puntos y elimina cualquier caracter que no sea número, punto o guión
-    const str = val.toString().replace(',', '.').replace(/[^\d.-]/g, '');
+    
+    let str = val.toString().trim();
+    
+    // Si viene vacio o solo simbolos
+    if (!str.match(/\d/)) return 0;
+
+    // Limpieza básica de moneda y letras
+    str = str.replace(/[^\d.,-]/g, '');
+
+    // Detección de formato Venezolano/Europeo (1.200,50 o 20,00)
+    // Lógica: Si hay coma y (no hay punto o la coma está DESPUÉS del punto) -> Coma es decimal
+    if (str.includes(',') && (!str.includes('.') || str.indexOf(',') > str.indexOf('.'))) {
+        // Eliminar puntos de miles
+        str = str.replace(/\./g, '');
+        // Reemplazar coma decimal por punto
+        str = str.replace(',', '.');
+    } else {
+        // Formato Inglés/Standard (1,200.50) -> Eliminar comas
+        str = str.replace(/,/g, '');
+    }
+
     return parseFloat(str) || 0;
   };
 
   const pendingCombined = useMemo(() => {
-    // 1. Pagos internos pendientes
+    // 1. Pagos internos (cargados manualmente) pendientes
     const internal = internalPayments
       .filter(p => p.status === PaymentStatus.PENDIENTE)
       .map(p => ({ ...p, source: 'INTERNO' }));
 
-    // 2. Identificar referencias que YA han sido procesadas (Verificadas O Rechazadas)
+    // 2. Set de referencias YA procesadas (Verificadas o Rechazadas) en la BD principal
+    // Normalizamos quitando espacios, ceros a la izquierda y todo a minúscula
     const processedRefs = new Set(internalPayments
-      .filter(p => p.status === PaymentStatus.VERIFICADO || p.status === PaymentStatus.RECHAZADO)
+      .filter(p => p.reference) // Solo si tiene referencia
       .map(p => p.reference.toString().trim().toLowerCase())
     );
     
-    // 3. Pagos virtuales pendientes
+    // 3. Pagos virtuales (IMPORTRANGE)
+    // Lógica: Solo mostramos los que SU REFERENCIA NO ESTÉ YA en la lista de procesados.
     const virtual = virtualPayments
       .filter(vp => {
-        // Normalización de estatus (la hoja puede tener 'Pendiente', vacío o null)
-        const status = vp.status || vp.estatus || 'Pendiente';
-        return status === 'Pendiente';
-      })
-      .filter(vp => {
-        const ref = (vp.reference || vp.referencia || '').toString().trim().toLowerCase();
+        // Obtenemos la referencia cruda
+        const refRaw = vp.reference || vp.referencia || vp.comprobante || '';
+        const ref = refRaw.toString().trim().toLowerCase();
+        
+        // Si no tiene referencia, lo mostramos (es sospechoso/manual)
         if (!ref) return true;
-        // Ocultamos si ya está en la lista de PROCESADOS
+        
+        // Si la referencia YA EXISTE en nuestros pagos procesados, lo ocultamos
+        // Esto "simula" que se ha verificado sin tocar la hoja IMPORTRANGE
         return !processedRefs.has(ref);
       })
-      .map(vp => ({
-        id: vp.id || `VIRT-${vp.reference || vp.referencia || Date.now()}`,
-        paymentDate: vp.paymentDate || vp.fecha || new Date().toISOString().split('T')[0],
-        cedulaRepresentative: (vp.cedulaRepresentative || vp.cedula || '').toString(),
-        method: vp.method || vp.metodo || 'Pago Móvil',
-        reference: (vp.reference || vp.referencia || 'S/R').toString(),
-        // Parseamos el monto de forma segura
-        amount: parseAmount(vp.amount || vp.monto),
-        status: PaymentStatus.PENDIENTE,
-        source: 'VIRTUAL',
-        raw: vp 
-      }));
+      .map(vp => {
+        const rawAmount = vp.amount || vp.monto || vp.importe || '0';
+        const parsedAmount = parseAmount(rawAmount);
+
+        return {
+          id: vp.id || `VIRT-${(vp.reference || 'NOREFERENCE')}-${Math.random().toString(36).substr(2, 5)}`,
+          paymentDate: vp.paymentDate || vp.fecha || new Date().toISOString().split('T')[0],
+          cedulaRepresentative: (vp.cedulaRepresentative || vp.cedula || 'S/I').toString(),
+          method: vp.method || vp.metodo || 'Pago Móvil',
+          reference: (vp.reference || vp.referencia || 'S/R').toString(),
+          amount: parsedAmount,
+          status: PaymentStatus.PENDIENTE,
+          source: 'VIRTUAL',
+          raw: vp 
+        };
+      });
 
     return [...internal, ...virtual];
   }, [internalPayments, virtualPayments]);
 
   const handleApprove = async (payment: any) => {
     setLoading(true);
+    
+    // Si es virtual, CREAMOS un nuevo registro en la BD principal
     if (payment.source === 'VIRTUAL') {
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
@@ -90,20 +117,21 @@ const PaymentVerification: React.FC = () => {
         sections: rep?.students?.map((s:any) => s.section).join(', ') || 'N/A',
         method: payment.method as any,
         amount: payment.amount,
-        reference: payment.reference,
+        reference: payment.reference, // Esta referencia ahora bloqueará que vuelva a aparecer
         status: PaymentStatus.VERIFICADO,
         type: PaymentType.PAGO_TOTAL,
-        observations: 'Verificado desde Oficina Virtual'
+        observations: 'Verificado desde Oficina Virtual (IMPORTRANGE)'
       };
       
       await dataService.addPayment(newPayment);
     } else {
+      // Si es interno, solo actualizamos el status
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.VERIFICADO);
     }
 
     notificationService.sendNotification({
-      title: `Pago Verificado`,
-      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) ha sido verificado.`,
+      title: `Pago Aprobado`,
+      message: `Monto: ${payment.amount}$ - Ref: ${payment.reference}`,
       category: NotificationCategory.VERIFICATION,
       recipient: NotificationRecipient.REPRESENTATIVE
     });
@@ -118,19 +146,21 @@ const PaymentVerification: React.FC = () => {
     if (payment.source === 'INTERNO') {
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.RECHAZADO);
     } else {
+      // Para rechazar un virtual, CREAMOS un registro con status RECHAZADO
+      // Esto hace que la referencia entre en "processedRefs" y desaparezca de la lista
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
       const rejectionRecord: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
-        level: rep?.students?.map((s:any) => s.level).join(', ') || 'N/A',
-        sections: rep?.students?.map((s:any) => s.section).join(', ') || 'N/A',
+        level: 'N/A',
+        sections: 'N/A',
         method: payment.method as any,
         amount: payment.amount,
         reference: payment.reference,
         status: PaymentStatus.RECHAZADO,
         type: PaymentType.PAGO_TOTAL,
-        observations: 'Rechazado desde Validación Virtual'
+        observations: 'Rechazado desde Oficina Virtual'
       };
       
       await dataService.addPayment(rejectionRecord);
@@ -138,7 +168,7 @@ const PaymentVerification: React.FC = () => {
     
     notificationService.sendNotification({
       title: `Pago Rechazado`,
-      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) presenta inconsistencias.`,
+      message: `El pago Ref: ${payment.reference} no pudo ser conciliado.`,
       category: NotificationCategory.VERIFICATION,
       recipient: NotificationRecipient.REPRESENTATIVE
     });
@@ -153,7 +183,7 @@ const PaymentVerification: React.FC = () => {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Centro de Verificación</h1>
-          <p className="text-slate-500 font-medium text-sm">Validación unificada de transacciones</p>
+          <p className="text-slate-500 font-medium text-sm">Validación de pagos virtuales y taquilla</p>
         </div>
         <button 
           onClick={handleSync} 
@@ -210,21 +240,31 @@ const PaymentVerification: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 text-slate-500 font-medium text-xs">{p.paymentDate}</td>
                     <td className="px-6 py-4">
-                      <p className="text-blue-600 font-black text-[10px] uppercase">{p.method}</p>
+                      <p className="text-blue-600 font-black text-[10px] uppercase truncate max-w-[120px]">{p.method}</p>
                       <p className="font-mono text-xs text-slate-400">Ref: {p.reference}</p>
                     </td>
                     <td className="px-6 py-4">
-                      <p className="font-black text-slate-900 text-base">{dataService.formatCurrency(p.amount, 'USD')}</p>
-                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-tighter">
-                        {dataService.formatCurrency(p.amount, 'BS')}
-                      </p>
+                      <div className="flex flex-col">
+                        {p.amount === 0 ? (
+                           <span className="flex items-center gap-1 text-amber-600 text-xs font-bold bg-amber-50 px-2 py-1 rounded-md">
+                             <AlertTriangle size={10} /> Revisar
+                           </span>
+                        ) : (
+                          <>
+                            <p className="font-black text-slate-900 text-base">{dataService.formatCurrency(p.amount, 'USD')}</p>
+                            <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-tighter">
+                              {dataService.formatCurrency(p.amount, 'BS')}
+                            </p>
+                          </>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex justify-center gap-2">
                         <button 
                           onClick={() => handleApprove(p)}
                           className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm hover:shadow-emerald-200 active:scale-90 disabled:opacity-50"
-                          title="Verificar y Abonar"
+                          title="Verificar y Guardar en BD Principal"
                           disabled={loading}
                         >
                           <CheckCircle size={18} />
@@ -232,7 +272,7 @@ const PaymentVerification: React.FC = () => {
                         <button 
                           onClick={() => handleReject(p)}
                           className="p-3 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-600 hover:text-white transition-all shadow-sm hover:shadow-rose-200 active:scale-90 disabled:opacity-50"
-                          title="Rechazar"
+                          title="Rechazar y Ocultar"
                           disabled={loading}
                         >
                           <XCircle size={18} />
