@@ -27,28 +27,42 @@ const PaymentVerification: React.FC = () => {
   };
 
   const pendingCombined = useMemo(() => {
-    // Pagos internos pendientes
+    // 1. Pagos internos pendientes
     const internal = internalPayments
       .filter(p => p.status === PaymentStatus.PENDIENTE)
       .map(p => ({ ...p, source: 'INTERNO' }));
 
-    // Pagos virtuales pendientes (suponiendo que la oficina virtual devuelve una lista)
-    // Filtramos los que ya han sido 'nacionalizados' revisando referencias
-    const existingRefs = new Set(internalPayments.map(p => p.reference));
+    // 2. Identificar referencias que YA han sido procesadas (Verificadas O Rechazadas)
+    // Esto evita que pagos virtuales ya gestionados (incluso los rechazados) sigan apareciendo.
+    const processedRefs = new Set(internalPayments
+      .filter(p => p.status === PaymentStatus.VERIFICADO || p.status === PaymentStatus.RECHAZADO)
+      .map(p => p.reference.toString().trim().toLowerCase())
+    );
     
+    // 3. Pagos virtuales pendientes
     const virtual = virtualPayments
-      .filter(vp => vp.status === 'Pendiente' || !vp.status)
-      .filter(vp => !existingRefs.has(vp.reference))
+      .filter(vp => {
+        // Normalización de estatus (la hoja puede tener 'Pendiente', vacío o null)
+        const status = vp.status || vp.estatus || 'Pendiente';
+        return status === 'Pendiente';
+      })
+      .filter(vp => {
+        const ref = (vp.reference || vp.referencia || '').toString().trim().toLowerCase();
+        // Si no tiene referencia, lo mostramos para revisión manual.
+        if (!ref) return true;
+        // Ocultamos si ya está en la lista de PROCESADOS (Verificado o Rechazado)
+        return !processedRefs.has(ref);
+      })
       .map(vp => ({
-        id: vp.id || `VIRT-${vp.reference}`,
-        paymentDate: vp.paymentDate || vp.fecha || 'N/A',
+        id: vp.id || `VIRT-${vp.reference || vp.referencia || Date.now()}`,
+        paymentDate: vp.paymentDate || vp.fecha || new Date().toISOString().split('T')[0],
         cedulaRepresentative: (vp.cedulaRepresentative || vp.cedula || '').toString(),
-        method: vp.method || vp.metodo || 'Electrónico',
-        reference: vp.reference || vp.referencia || '',
+        method: vp.method || vp.metodo || 'Pago Móvil',
+        reference: (vp.reference || vp.referencia || 'S/R').toString(),
         amount: parseFloat(vp.amount || vp.monto || 0),
         status: PaymentStatus.PENDIENTE,
         source: 'VIRTUAL',
-        raw: vp // guardamos original para debugging
+        raw: vp 
       }));
 
     return [...internal, ...virtual];
@@ -56,20 +70,20 @@ const PaymentVerification: React.FC = () => {
 
   const handleApprove = async (payment: any) => {
     if (payment.source === 'VIRTUAL') {
-      // Si es virtual, debemos buscar al representante para completar los datos
+      // Si es virtual, buscamos al representante para completar los datos y crear el registro interno
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
       const newPayment: Partial<PaymentRecord> = {
         cedulaRepresentative: payment.cedulaRepresentative,
         matricula: rep?.matricula || 'SIN_MATRICULA',
-        level: rep?.students.map(s => s.level).join(', ') || 'Desconocido',
-        sections: rep?.students.map(s => s.section).join(', ') || 'N/A',
+        level: rep?.students.map((s:any) => s.level).join(', ') || 'Desconocido',
+        sections: rep?.students.map((s:any) => s.section).join(', ') || 'N/A',
         method: payment.method as any,
         amount: payment.amount,
         reference: payment.reference,
-        status: PaymentStatus.VERIFICADO,
+        status: PaymentStatus.VERIFICADO, // Al aprobar, pasa directo a Verificado
         type: PaymentType.PAGO_TOTAL,
-        observations: 'Aprobado desde Oficina Virtual'
+        observations: 'Verificado desde Oficina Virtual'
       };
       
       await dataService.addPayment(newPayment);
@@ -80,7 +94,7 @@ const PaymentVerification: React.FC = () => {
 
     notificationService.sendNotification({
       title: `Pago Verificado`,
-      message: `El pago por ${payment.amount}$ (${payment.reference}) ha sido verificado y abonado satisfactoriamente.`,
+      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) ha sido verificado y conciliado.`,
       category: NotificationCategory.VERIFICATION,
       recipient: NotificationRecipient.REPRESENTATIVE
     });
@@ -91,12 +105,30 @@ const PaymentVerification: React.FC = () => {
   const handleReject = async (payment: any) => {
     if (payment.source === 'INTERNO') {
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.RECHAZADO);
+    } else {
+      // Para pagos virtuales, creamos un registro "Sombra" de rechazo en la base interna
+      // Esto permite que el sistema recuerde que esta referencia fue rechazada y no la vuelva a mostrar.
+      const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
+      
+      const rejectionRecord: Partial<PaymentRecord> = {
+        cedulaRepresentative: payment.cedulaRepresentative,
+        matricula: rep?.matricula || 'SIN_MATRICULA',
+        level: rep?.students.map((s:any) => s.level).join(', ') || 'N/A',
+        sections: rep?.students.map((s:any) => s.section).join(', ') || 'N/A',
+        method: payment.method as any,
+        amount: payment.amount,
+        reference: payment.reference,
+        status: PaymentStatus.RECHAZADO,
+        type: PaymentType.PAGO_TOTAL,
+        observations: 'Rechazado desde Validación Virtual'
+      };
+      
+      await dataService.addPayment(rejectionRecord);
     }
-    // Para virtuales, simplemente se ignoran o se podrían marcar en el futuro
     
     notificationService.sendNotification({
       title: `Pago Rechazado`,
-      message: `El pago por ${payment.amount}$ (${payment.reference}) fue rechazado por inconsistencias.`,
+      message: `El pago por ${payment.amount}$ (Ref: ${payment.reference}) presenta inconsistencias.`,
       category: NotificationCategory.VERIFICATION,
       recipient: NotificationRecipient.REPRESENTATIVE
     });
@@ -126,12 +158,12 @@ const PaymentVerification: React.FC = () => {
           <table className="w-full text-sm text-left">
             <thead className="bg-slate-50/50 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-6 py-4">Origen</th>
+                <th className="px-6 py-4">Canal</th>
                 <th className="px-6 py-4">Representante</th>
                 <th className="px-6 py-4">Fecha</th>
                 <th className="px-6 py-4">Detalles</th>
                 <th className="px-6 py-4">Monto</th>
-                <th className="px-6 py-4 text-center">Gestión</th>
+                <th className="px-6 py-4 text-center">Acción</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -140,7 +172,8 @@ const PaymentVerification: React.FC = () => {
                   <td colSpan={6} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center gap-3 opacity-30">
                       <CheckCircle size={48} className="text-emerald-500" />
-                      <p className="font-bold text-slate-500 uppercase tracking-widest">No hay conciliaciones pendientes</p>
+                      <p className="font-bold text-slate-500 uppercase tracking-widest">Todo conciliado</p>
+                      <p className="text-xs">No hay pagos pendientes de verificación</p>
                     </div>
                   </td>
                 </tr>
@@ -160,7 +193,7 @@ const PaymentVerification: React.FC = () => {
                     <td className="px-6 py-4">
                       <p className="font-black text-slate-900">C.I. {p.cedulaRepresentative}</p>
                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">
-                        {dataService.getRepresentativeByCedula(p.cedulaRepresentative)?.name || 'Externo'}
+                        {dataService.getRepresentativeByCedula(p.cedulaRepresentative)?.name || 'Usuario Externo'}
                       </p>
                     </td>
                     <td className="px-6 py-4 text-slate-500 font-medium text-xs">{p.paymentDate}</td>
@@ -179,14 +212,14 @@ const PaymentVerification: React.FC = () => {
                         <button 
                           onClick={() => handleApprove(p)}
                           className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl hover:bg-emerald-600 hover:text-white transition-all shadow-sm hover:shadow-emerald-200 active:scale-90"
-                          title="Aprobar y Abonar"
+                          title="Verificar y Abonar"
                         >
                           <CheckCircle size={18} />
                         </button>
                         <button 
                           onClick={() => handleReject(p)}
                           className="p-3 bg-rose-50 text-rose-600 rounded-2xl hover:bg-rose-600 hover:text-white transition-all shadow-sm hover:shadow-rose-200 active:scale-90"
-                          title="Rechazar Pago"
+                          title="Rechazar"
                         >
                           <XCircle size={18} />
                         </button>
@@ -197,32 +230,6 @@ const PaymentVerification: React.FC = () => {
               )}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
-        <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-xl flex items-start gap-4">
-          <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl">
-            <AlertCircle size={24} />
-          </div>
-          <div>
-            <h4 className="font-black text-slate-800 text-sm uppercase tracking-tight">Protocolo de Oficina Virtual</h4>
-            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-              Los pagos registrados vía web que NO tengan un representante asociado en esta app aparecerán como "Externos". Se recomienda registrar al alumno antes de verificar su primer pago virtual.
-            </p>
-          </div>
-        </div>
-        
-        <div className="bg-slate-900 p-6 rounded-3xl shadow-xl flex items-start gap-4 text-white">
-          <div className="p-3 bg-blue-600/20 text-blue-400 rounded-2xl">
-            <Smartphone size={24} />
-          </div>
-          <div>
-            <h4 className="font-black text-blue-400 text-sm uppercase tracking-tight">Seguridad de Abonos</h4>
-            <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-              Al hacer clic en el check verde, el sistema genera automáticamente un registro de pago oficial en la base de datos de administración y descuenta el monto de la deuda del representante.
-            </p>
-          </div>
         </div>
       </div>
     </div>
