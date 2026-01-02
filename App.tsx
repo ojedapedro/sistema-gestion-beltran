@@ -11,31 +11,21 @@ import Config from './views/Config';
 import NotificationCenter from './components/NotificationCenter';
 import { notificationService } from './services/notificationService';
 import { dataService } from './services/dataService';
-import { Database, RefreshCw, TrendingUp } from 'lucide-react';
+import { Database, TrendingUp } from 'lucide-react';
 
 const App: React.FC = () => {
   const [activeView, setActiveView] = useState('dashboard');
-  const [isSyncing, setIsSyncing] = useState(false);
   const [config, setConfig] = useState(dataService.getConfig());
 
   useEffect(() => {
     notificationService.requestPermission();
     
     const initSync = async () => {
-      setIsSyncing(true);
       await dataService.syncFromSheets();
       setConfig(dataService.getConfig());
-      setIsSyncing(false);
     };
     initSync();
   }, []);
-
-  const handleSync = async () => {
-    setIsSyncing(true);
-    await dataService.syncFromSheets();
-    setConfig(dataService.getConfig());
-    setIsSyncing(false);
-  };
 
   const renderView = () => {
     switch (activeView) {
@@ -59,13 +49,8 @@ const App: React.FC = () => {
           <div className="flex items-center gap-4">
             <div className="bg-slate-900 px-4 py-2 rounded-xl shadow-lg border border-slate-700 flex items-center gap-3">
               <Database size={14} className="text-blue-400" />
-              <span className="text-xs font-bold text-slate-200 uppercase tracking-widest">Cloud DB</span>
-              <button 
-                onClick={handleSync}
-                className={`ml-2 text-slate-400 hover:text-white transition-all ${isSyncing ? 'animate-spin' : ''}`}
-              >
-                <RefreshCw size={14} />
-              </button>
+              <span className="text-xs font-bold text-slate-200 uppercase tracking-widest">Base de Datos Unificada</span>
+              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
             </div>
             
             <div className="bg-emerald-600/10 px-4 py-2 rounded-xl border border-emerald-200 flex items-center gap-2">

@@ -2,13 +2,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { dataService } from '../services/dataService';
 import { notificationService } from '../services/notificationService';
-import { PaymentRecord, PaymentStatus, NotificationCategory, NotificationRecipient, PaymentMethod, PaymentType } from '../types';
-import { CheckCircle, XCircle, Clock, Globe, Smartphone, RefreshCw, AlertCircle } from 'lucide-react';
+import { PaymentRecord, PaymentStatus, NotificationCategory, NotificationRecipient, PaymentType } from '../types';
+import { CheckCircle, XCircle, Globe, Smartphone } from 'lucide-react';
 
 const PaymentVerification: React.FC = () => {
   const [internalPayments, setInternalPayments] = useState<PaymentRecord[]>([]);
   const [virtualPayments, setVirtualPayments] = useState<any[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
 
   const loadData = () => {
     setInternalPayments(dataService.getPayments());
@@ -16,15 +15,10 @@ const PaymentVerification: React.FC = () => {
   };
 
   useEffect(() => {
+    // Carga inicial y auto-refresco silencioso
     loadData();
+    dataService.syncFromSheets().then(() => loadData());
   }, []);
-
-  const handleSync = async () => {
-    setIsSyncing(true);
-    await dataService.syncFromSheets();
-    loadData();
-    setIsSyncing(false);
-  };
 
   const pendingCombined = useMemo(() => {
     // 1. Pagos internos pendientes
@@ -33,7 +27,6 @@ const PaymentVerification: React.FC = () => {
       .map(p => ({ ...p, source: 'INTERNO' }));
 
     // 2. Identificar referencias que YA han sido procesadas (Verificadas O Rechazadas)
-    // Esto evita que pagos virtuales ya gestionados (incluso los rechazados) sigan apareciendo.
     const processedRefs = new Set(internalPayments
       .filter(p => p.status === PaymentStatus.VERIFICADO || p.status === PaymentStatus.RECHAZADO)
       .map(p => p.reference.toString().trim().toLowerCase())
@@ -48,9 +41,8 @@ const PaymentVerification: React.FC = () => {
       })
       .filter(vp => {
         const ref = (vp.reference || vp.referencia || '').toString().trim().toLowerCase();
-        // Si no tiene referencia, lo mostramos para revisión manual.
         if (!ref) return true;
-        // Ocultamos si ya está en la lista de PROCESADOS (Verificado o Rechazado)
+        // Ocultamos si ya está en la lista de PROCESADOS
         return !processedRefs.has(ref);
       })
       .map(vp => ({
@@ -70,7 +62,6 @@ const PaymentVerification: React.FC = () => {
 
   const handleApprove = async (payment: any) => {
     if (payment.source === 'VIRTUAL') {
-      // Si es virtual, buscamos al representante para completar los datos y crear el registro interno
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
       const newPayment: Partial<PaymentRecord> = {
@@ -81,14 +72,13 @@ const PaymentVerification: React.FC = () => {
         method: payment.method as any,
         amount: payment.amount,
         reference: payment.reference,
-        status: PaymentStatus.VERIFICADO, // Al aprobar, pasa directo a Verificado
+        status: PaymentStatus.VERIFICADO,
         type: PaymentType.PAGO_TOTAL,
         observations: 'Verificado desde Oficina Virtual'
       };
       
       await dataService.addPayment(newPayment);
     } else {
-      // Si es interno, solo actualizamos estatus
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.VERIFICADO);
     }
 
@@ -99,15 +89,17 @@ const PaymentVerification: React.FC = () => {
       recipient: NotificationRecipient.REPRESENTATIVE
     });
 
-    loadData();
+    // Pequeño delay para permitir que la API responda antes de recargar
+    setTimeout(async () => {
+      await dataService.syncFromSheets();
+      loadData();
+    }, 500);
   };
 
   const handleReject = async (payment: any) => {
     if (payment.source === 'INTERNO') {
       await dataService.updatePaymentStatus(payment.id, PaymentStatus.RECHAZADO);
     } else {
-      // Para pagos virtuales, creamos un registro "Sombra" de rechazo en la base interna
-      // Esto permite que el sistema recuerde que esta referencia fue rechazada y no la vuelva a mostrar.
       const rep = dataService.getRepresentativeByCedula(payment.cedulaRepresentative);
       
       const rejectionRecord: Partial<PaymentRecord> = {
@@ -133,7 +125,10 @@ const PaymentVerification: React.FC = () => {
       recipient: NotificationRecipient.REPRESENTATIVE
     });
     
-    loadData();
+    setTimeout(async () => {
+      await dataService.syncFromSheets();
+      loadData();
+    }, 500);
   };
 
   return (
@@ -141,16 +136,8 @@ const PaymentVerification: React.FC = () => {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-black text-slate-900 tracking-tight">Centro de Verificación</h1>
-          <p className="text-slate-500 font-medium text-sm">Validación multicanal: Oficina Virtual + App Administrativa</p>
+          <p className="text-slate-500 font-medium text-sm">Validación unificada de transacciones</p>
         </div>
-        <button 
-          onClick={handleSync}
-          disabled={isSyncing}
-          className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-lg active:scale-95 disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
-          Sincronizar Bases de Datos
-        </button>
       </div>
 
       <div className="bg-white rounded-3xl shadow-xl border border-slate-100 overflow-hidden card-stylized">
@@ -158,7 +145,7 @@ const PaymentVerification: React.FC = () => {
           <table className="w-full text-sm text-left">
             <thead className="bg-slate-50/50 text-slate-400 uppercase text-[10px] font-black tracking-widest border-b border-slate-100">
               <tr>
-                <th className="px-6 py-4">Canal</th>
+                <th className="px-6 py-4">Origen</th>
                 <th className="px-6 py-4">Representante</th>
                 <th className="px-6 py-4">Fecha</th>
                 <th className="px-6 py-4">Detalles</th>
